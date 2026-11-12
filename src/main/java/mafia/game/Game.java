@@ -20,6 +20,12 @@ public final class Game {
     private int countdownSeconds;
     private int countdownVersion;
     private boolean started;
+    private boolean nightOpen;
+    private int nightNumber;
+    private int nightVersion;
+    private String mafiaTargetId;
+    private String doctorTargetId;
+    private boolean policeUsed;
 
     public Game(String guildId, String channelId) {
         this.id = UUID.randomUUID().toString();
@@ -86,8 +92,78 @@ public final class Game {
         Collections.shuffle(roles);
         List<Player> participants = new ArrayList<>(players.values());
         Map<Player, String> assignments = new LinkedHashMap<>();
-        for (int i = 0; i < participants.size(); i++) assignments.put(participants.get(i), roles.get(i));
+        for (int i = 0; i < participants.size(); i++) {
+            participants.get(i).setRole(roles.get(i));
+            assignments.put(participants.get(i), roles.get(i));
+        }
         return assignments;
+    }
+
+    public synchronized int beginNight() {
+        if (!started || nightOpen) return -1;
+        nightOpen = true;
+        nightVersion++;
+        mafiaTargetId = null;
+        doctorTargetId = null;
+        policeUsed = false;
+        nightNumber++;
+        return nightVersion;
+    }
+
+    public synchronized int getNightVersion() { return nightVersion; }
+    public synchronized int getNightNumber() { return nightNumber; }
+    public synchronized boolean isNightOpen() { return nightOpen; }
+    public synchronized List<Player> getPlayers() { return new ArrayList<>(players.values()); }
+
+    public synchronized boolean selectNightTarget(String actorId, String targetId, String ability) {
+        Player actor = players.get(actorId);
+        Player target = players.get(targetId);
+        if (!nightOpen || actor == null || target == null || !actor.isAlive() || !target.isAlive()) return false;
+        switch (ability) {
+            case "mafia":
+                if (!"마피아".equals(actor.getRole()) || actorId.equals(targetId)) return false;
+                mafiaTargetId = targetId;
+                return true;
+            case "doctor":
+                if (!"의사".equals(actor.getRole())) return false;
+                doctorTargetId = targetId;
+                return true;
+            case "police":
+                if (!"경찰".equals(actor.getRole()) || policeUsed) return false;
+                policeUsed = true;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    public synchronized String getRole(String playerId) {
+        Player player = players.get(playerId);
+        return player == null ? null : player.getRole();
+    }
+
+    public synchronized boolean isAlive(String playerId) {
+        Player player = players.get(playerId);
+        return player != null && player.isAlive();
+    }
+
+    public synchronized String investigate(String targetId) {
+        Player target = players.get(targetId);
+        if (target == null) return null;
+        return "마피아".equals(target.getRole()) ? "마피아 입니다." : "마피아가 아닙니다.";
+    }
+
+    public synchronized String finishNight(int version) {
+        if (!nightOpen || version != nightVersion) return null;
+        nightOpen = false;
+        nightVersion++;
+        if (mafiaTargetId == null || !players.containsKey(mafiaTargetId) || !players.get(mafiaTargetId).isAlive()) {
+            return "조용하게 밤이 넘어갔습니다.";
+        }
+        Player victim = players.get(mafiaTargetId);
+        if (mafiaTargetId.equals(doctorTargetId)) return "`" + victim.getNickname() + "`님이 치료를 받고 살아났습니다!";
+        victim.kill();
+        return "`" + victim.getNickname() + "`님이 살해당하였습니다.";
     }
 
     public synchronized MessageEmbed getLobbyEmbed() {
