@@ -7,7 +7,6 @@ import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
 import net.dv8tion.jda.api.components.buttons.Button;
-import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.utils.messages.MessageEditBuilder;
 import java.util.Map;
@@ -180,7 +179,8 @@ public final class ButtonManager extends ListenerAdapter {
                 buttons.add(Button.primary(NIGHT_PREFIX + ability + ":" + game.getId() + ":" + target.getId(), target.getNickname()));
             }
             for (int i = 0; i < buttons.size(); i += 5) {
-                message.addActionRow(buttons.subList(i, Math.min(i + 5, buttons.size())));
+                message.addComponents(java.util.List.of(ActionRow.of(
+                        buttons.subList(i, Math.min(i + 5, buttons.size())))));
             }
             channel.sendMessage(message.build()).queue(null, error -> System.err.println("밤 능력 안내 실패: " + error.getMessage()));
         }, error -> System.err.println("밤 능력 DM 실패: " + error.getMessage())),
@@ -219,7 +219,44 @@ public final class ButtonManager extends ListenerAdapter {
     private void finishNight(ButtonInteractionEvent event, Game game, int version, int night) {
         String outcome = game.finishNight(version);
         if (outcome == null) return;
-        sendAnnouncement(event, game, night + "번째 낮", outcome + "\n대화를 통해 추리하세요.");
+        event.getJDA().getTextChannelById(game.getChannelId())
+                .sendMessageEmbeds(new EmbedBuilder().setTitle(night + "번째 낮")
+                        .setDescription(outcome + "\n대화를 통해 추리하세요.")
+                        .setColor(0x5865F2).build())
+                .queue(message -> startDayTimer(event, game));
+    }
+
+    private void startDayTimer(ButtonInteractionEvent event, Game game) {
+        int remainingSeconds = game.getPlayers().size() * 10;
+        int minutes = remainingSeconds / 60;
+        int seconds = remainingSeconds % 60;
+        String time = String.format("%02d:%02d", minutes, seconds);
+        event.getJDA().getTextChannelById(game.getChannelId())
+                .sendMessageEmbeds(new EmbedBuilder().setTitle("투표까지 남은 시간")
+                        .setDescription("⌛" + time).setColor(0x5865F2).build())
+                .queue(message -> {
+                    if (remainingSeconds > 0) {
+                        TIMER.schedule(() -> updateDayTimer(event, game, message.getId(), remainingSeconds - 1),
+                                1, TimeUnit.SECONDS);
+                    }
+                }, error -> System.err.println("낮 타이머 메시지 전송 실패: " + error.getMessage()));
+    }
+
+    private void updateDayTimer(ButtonInteractionEvent event, Game game, String timerMessageId, int remainingSeconds) {
+        int minutes = remainingSeconds / 60;
+        int seconds = remainingSeconds % 60;
+        String time = String.format("%02d:%02d", minutes, seconds);
+        event.getJDA().getTextChannelById(game.getChannelId())
+                .editMessageEmbedsById(timerMessageId, new EmbedBuilder()
+                        .setTitle("투표까지 남은 시간")
+                        .setDescription("⌛" + time)
+                        .setColor(0x5865F2)
+                        .build())
+                .queue(null, error -> System.err.println("낮 타이머 메시지 갱신 실패: " + error.getMessage()));
+        if (remainingSeconds > 0) {
+            TIMER.schedule(() -> updateDayTimer(event, game, timerMessageId, remainingSeconds - 1),
+                    1, TimeUnit.SECONDS);
+        }
     }
 
     private void sendAnnouncement(ButtonInteractionEvent event, Game game, String title, String message) {
