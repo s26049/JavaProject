@@ -72,6 +72,7 @@ public final class Game {
     }
 
     public synchronized boolean removePlayer(String playerId) {
+        if (started) return false;
         boolean removed = players.remove(playerId) != null;
         if (removed && !started && players.size() < MAX_PLAYERS) { countdownSeconds = 0; countdownVersion++; }
         return removed;

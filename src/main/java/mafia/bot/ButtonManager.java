@@ -8,8 +8,8 @@ import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
 import net.dv8tion.jda.api.components.buttons.Button;
 import net.dv8tion.jda.api.Permission;
-import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.PermissionOverride;
+import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.utils.messages.MessageEditBuilder;
@@ -17,7 +17,10 @@ import java.util.Map;
 import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -33,8 +36,11 @@ public final class ButtonManager extends ListenerAdapter {
     private static final String NIGHT_PREFIX = "mafia:night:";
     private static final String VOTE_PREFIX = "mafia:vote:";
     private static final String TRIAL_PREFIX = "mafia:trial:";
-    private final Map<String, Map<String, Integer>> previousSendPermissions = new HashMap<>();
-    private final Map<String, Map<String, Integer>> deadSendPermissions = new HashMap<>();
+    private static final List<Permission> CHAT_SEND_PERMISSIONS = List.of(
+            Permission.MESSAGE_SEND, Permission.MESSAGE_SEND_IN_THREADS);
+    private final Map<String, Map<String, Map<Permission, Integer>>> previousSendPermissions = new HashMap<>();
+    private final Map<String, Map<String, Map<Permission, Integer>>> deadSendPermissions = new HashMap<>();
+    private final Map<String, Map<String, InteractionHook>> participantHooks = new ConcurrentHashMap<>();
 
     private final GameManager gameManager;
 
@@ -109,12 +115,17 @@ public final class ButtonManager extends ListenerAdapter {
                         .build())
                 .setEphemeral(true)
                 .setComponents(ActionRow.of(Button.danger(cancelButtonId(game.getId()), "취소하기")))
-                .queue();
+                .queue(hook -> participantHooks.computeIfAbsent(game.getId(), ignored -> new ConcurrentHashMap<>())
+                        .put(player.getId(), hook));
         updateLobby(event, game);
         if (game.isFull()) startCountdown(event, game);
     }
 
     private void cancel(ButtonInteractionEvent event, Game game) {
+        if (game.isStarted()) {
+            replyEphemeral(event, "게임 참가 취소 실패", "게임이 시작되어 참가를 취소할 수 없습니다.", 0xED4245);
+            return;
+        }
         boolean wasFull = game.isFull();
         if (!game.removePlayer(event.getUser().getId())) {
             replyEphemeral(event, "게임 참가 실패", "참가 중인 대기실이 아닙니다.", 0xED4245);
@@ -122,6 +133,8 @@ public final class ButtonManager extends ListenerAdapter {
         }
 
         replyEphemeral(event, "게임 참가 안내", "✅ 취소 완료!", 0x57F287);
+        Map<String, InteractionHook> hooks = participantHooks.get(game.getId());
+        if (hooks != null) hooks.remove(event.getUser().getId());
         if (wasFull) sendAnnouncement(event, game, "게임 시작 안내", "참가자가 부족합니다.");
         updateLobby(event, game);
         if (game.isFull()) startCountdown(event, game);
@@ -148,13 +161,12 @@ public final class ButtonManager extends ListenerAdapter {
         } else if (seconds == 0) {
             Map<Player, String> roles = game.startAndAssignRoles();
             if (roles == null) return;
-            for (Map.Entry<Player, String> assignment : roles.entrySet()) sendRoleDm(event, game, assignment, roles);
+            for (Map.Entry<Player, String> assignment : roles.entrySet()) sendRoleNotice(game, assignment, roles);
             startNight(event, game);
         }
     }
 
-    private void sendRoleDm(ButtonInteractionEvent event, Game game, Map.Entry<Player, String> assignment,
-                            Map<Player, String> roles) {
+    private void sendRoleNotice(Game game, Map.Entry<Player, String> assignment, Map<Player, String> roles) {
         String role = assignment.getValue();
         String description = "당신의 직업은 `" + role + "` 입니다!";
         if (role.equals("마피아")) {
@@ -165,11 +177,8 @@ public final class ButtonManager extends ListenerAdapter {
         }
         final String roleDescription = description;
         int color = role.equals("마피아") ? 0xED4245 : 0x5865F2;
-        event.getJDA().retrieveUserById(assignment.getKey().getId()).queue(user ->
-                user.openPrivateChannel().queue(channel -> channel.sendMessageEmbeds(new EmbedBuilder()
-                                .setTitle("직업 배정 안내").setDescription(roleDescription).setColor(color).build())
-                        .queue(), error -> System.err.println("직업 안내 DM 실패: " + error.getMessage())),
-                error -> System.err.println("직업 안내 사용자 조회 실패: " + error.getMessage()));
+        sendPrivateEmbed(game, assignment.getKey().getId(), new EmbedBuilder()
+                .setTitle("직업 배정 안내").setDescription(roleDescription).setColor(color).build());
     }
 
     private void startNight(ButtonInteractionEvent event, Game game) {
@@ -190,21 +199,30 @@ public final class ButtonManager extends ListenerAdapter {
         String prompt = ability.equals("mafia") ? "살해할 사람을 선택해주세요."
                 : ability.equals("police") ? "조사할 사람을 선택해주세요."
                 : "치료할 사람을 선택해주세요.";
-        event.getJDA().retrieveUserById(actor.getId()).queue(user -> user.openPrivateChannel().queue(channel -> {
-            net.dv8tion.jda.api.utils.messages.MessageCreateBuilder message = new net.dv8tion.jda.api.utils.messages.MessageCreateBuilder()
-                    .addEmbeds(new EmbedBuilder().setTitle(night + "번째 밤").setDescription(prompt).setColor(0x5865F2).build());
-            java.util.List<Button> buttons = new java.util.ArrayList<>();
-            for (Player target : game.getPlayers()) {
-                if (!target.isAlive() || (ability.equals("mafia") && target.getRole().equals("마피아"))) continue;
-                buttons.add(Button.primary(NIGHT_PREFIX + ability + ":" + game.getId() + ":" + target.getId(), target.getNickname()));
-            }
-            for (int i = 0; i < buttons.size(); i += 5) {
-                message.addComponents(java.util.List.of(ActionRow.of(
-                        buttons.subList(i, Math.min(i + 5, buttons.size())))));
-            }
-            channel.sendMessage(message.build()).queue(null, error -> System.err.println("밤 능력 안내 실패: " + error.getMessage()));
-        }, error -> System.err.println("밤 능력 DM 실패: " + error.getMessage())),
-                error -> System.err.println("밤 능력 사용자 조회 실패: " + error.getMessage()));
+        List<Button> buttons = new ArrayList<>();
+        for (Player target : game.getPlayers()) {
+            if (!target.isAlive() || (ability.equals("mafia") && target.getRole().equals("마피아"))) continue;
+            buttons.add(Button.primary(NIGHT_PREFIX + ability + ":" + game.getId() + ":" + target.getId(), target.getNickname()));
+        }
+        sendPrivateEmbed(game, actor.getId(), new EmbedBuilder()
+                        .setTitle(night + "번째 밤").setDescription(prompt).setColor(0x5865F2).build(),
+                buttonRows(buttons));
+    }
+
+    private void sendPrivateEmbed(Game game, String playerId, net.dv8tion.jda.api.entities.MessageEmbed embed) {
+        sendPrivateEmbed(game, playerId, embed, java.util.Collections.emptyList());
+    }
+
+    private void sendPrivateEmbed(Game game, String playerId, net.dv8tion.jda.api.entities.MessageEmbed embed,
+                                  List<net.dv8tion.jda.api.components.MessageTopLevelComponent> components) {
+        Map<String, InteractionHook> hooks = participantHooks.get(game.getId());
+        InteractionHook hook = hooks == null ? null : hooks.get(playerId);
+        if (hook == null) {
+            System.err.println("비공개 안내를 보낼 참가자 상호작용을 찾을 수 없습니다: " + playerId);
+            return;
+        }
+        hook.sendMessageEmbeds(embed).setEphemeral(true).setComponents(components).queue(
+                ignored -> { }, error -> System.err.println("채널 비공개 안내 전송 실패: " + error.getMessage()));
     }
 
     private void handleNightAction(ButtonInteractionEvent event, String componentId) {
@@ -226,14 +244,15 @@ public final class ButtonManager extends ListenerAdapter {
             Player target = game.getPlayers().stream().filter(player -> player.getId().equals(targetId)).findFirst().orElseThrow();
             event.replyEmbeds(new EmbedBuilder().setTitle("수색 결과")
                     .setDescription("`" + target.getNickname() + "`님은 " + result).setColor(0x5865F2).build())
-                    .setEphemeral(true).queue();
+                    .setEphemeral(true).queue(hook -> rememberHook(game, event.getUser().getId(), hook));
             return;
         }
         if (!game.selectNightTarget(event.getUser().getId(), targetId, ability)) {
             replyEphemeral(event, "능력 사용 실패", "해당 대상을 선택할 수 없습니다.", 0xED4245);
             return;
         }
-        replyEphemeral(event, "능력 사용 안내", ability.equals("mafia") ? "처형 대상을 선택했습니다. 동료와 선택이 공유됩니다." : "치료 대상을 선택했습니다.", 0x57F287);
+        replyEphemeral(event, game, "능력 사용 안내",
+                ability.equals("mafia") ? "처형 대상을 선택했습니다. 동료와 선택이 공유됩니다." : "치료 대상을 선택했습니다.", 0x57F287);
     }
 
     private void finishNight(ButtonInteractionEvent event, Game game, int version, int night) {
@@ -244,6 +263,7 @@ public final class ButtonManager extends ListenerAdapter {
             if (winner != null) {
                 sendAnnouncement(event, game, "게임 결과", winner);
                 restoreDeadSpeechPermissions(event, game);
+                participantHooks.remove(game.getId());
             } else {
                 event.getJDA().getTextChannelById(game.getChannelId())
                         .sendMessageEmbeds(new EmbedBuilder().setTitle(night + "번째 낮")
@@ -300,7 +320,7 @@ public final class ButtonManager extends ListenerAdapter {
             buttons.add(Button.primary(VOTE_PREFIX + game.getId() + ":" + player.getId(), player.getNickname()));
         }
         TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
-        channel.sendMessageEmbeds(countdownEmbed("투표 시간", "의심되는 사람을 투표하세요.", 10))
+        channel.sendMessageEmbeds(countdownEmbed("투표 시간", "의심되는 사람을 선택하세요.", 10))
                 .setComponents(buttonRows(buttons))
                 .queue(message -> TIMER.schedule(() -> updateVoteTimer(event, game, message.getId(), version, 9),
                         1, TimeUnit.SECONDS),
@@ -410,8 +430,11 @@ public final class ButtonManager extends ListenerAdapter {
                 && game.getGuildId().equals(event.getGuild().getId())
                 && game.getChannelId().equals(event.getChannel().getId())
                 && game.castVote(event.getUser().getId(), parts[3]);
-        replyEphemeral(event, accepted ? "투표 완료" : "투표 실패",
-                accepted ? "투표가 접수되었습니다." : "생존한 참가자는 한 번만 투표할 수 있습니다.", accepted ? 0x57F287 : 0xED4245);
+        if (game != null && accepted) {
+            replyEphemeral(event, game, "투표 완료", "투표가 접수되었습니다.", 0x57F287);
+        } else {
+            replyEphemeral(event, "투표 실패", "생존한 참가자는 한 번만 투표할 수 있습니다.", 0xED4245);
+        }
     }
 
     private void handleTrialVote(ButtonInteractionEvent event, String componentId) {
@@ -424,14 +447,17 @@ public final class ButtonManager extends ListenerAdapter {
                 && game.getChannelId().equals(event.getChannel().getId())
                 && (approve || parts[3].equals("oppose"))
                 && game.castTrialVote(event.getUser().getId(), approve);
-        replyEphemeral(event, accepted ? "찬반 투표 완료" : "투표 실패",
-                accepted ? "찬반 투표가 접수되었습니다." : "후보자 외 생존 참가자는 한 번만 투표할 수 있습니다.", accepted ? 0x57F287 : 0xED4245);
+        if (game != null && accepted) {
+            replyEphemeral(event, game, "찬반 투표 완료", "찬반 투표가 접수되었습니다.", 0x57F287);
+        } else {
+            replyEphemeral(event, "투표 실패", "후보자 외 생존 참가자는 한 번만 투표할 수 있습니다.", 0xED4245);
+        }
     }
 
     private void applyDefenseSpeechLock(ButtonInteractionEvent event, Game game, String candidateId,
                                         Runnable whenComplete) {
         TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
-        Map<String, Integer> previous = new HashMap<>();
+        Map<String, Map<Permission, Integer>> previous = new HashMap<>();
         previousSendPermissions.put(game.getId(), previous);
         List<Player> players = game.getPlayers();
         AtomicInteger pending = new AtomicInteger(players.size());
@@ -442,15 +468,13 @@ public final class ButtonManager extends ListenerAdapter {
         for (Player player : game.getPlayers()) {
             event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(player.getId()).queue(member -> {
                 PermissionOverride override = channel.getPermissionOverride(member);
-                int original = override == null ? 0 : override.getAllowed().contains(Permission.MESSAGE_SEND) ? 1
-                        : override.getDenied().contains(Permission.MESSAGE_SEND) ? -1 : 0;
-                synchronized (previous) { previous.put(player.getId(), original); }
+                synchronized (previous) { previous.put(player.getId(), snapshotSendPermissions(override)); }
                 if (player.getId().equals(candidateId)) {
-                    channel.upsertPermissionOverride(member).grant(Permission.MESSAGE_SEND).queue(
+                    channel.upsertPermissionOverride(member).grant(CHAT_SEND_PERMISSIONS).queue(
                             ignored -> completeSpeechLock(pending, whenComplete),
                             error -> { System.err.println("최후의 반론 발언권 설정 실패: " + error.getMessage()); completeSpeechLock(pending, whenComplete); });
                 } else {
-                    channel.upsertPermissionOverride(member).deny(Permission.MESSAGE_SEND).queue(
+                    channel.upsertPermissionOverride(member).deny(CHAT_SEND_PERMISSIONS).queue(
                             ignored -> completeSpeechLock(pending, whenComplete),
                             error -> { System.err.println("최후의 반론 발언권 설정 실패: " + error.getMessage()); completeSpeechLock(pending, whenComplete); });
                 }
@@ -466,16 +490,18 @@ public final class ButtonManager extends ListenerAdapter {
     }
 
     private void restoreSpeechPermissions(ButtonInteractionEvent event, Game game, Runnable whenComplete) {
-        Map<String, Integer> previous = previousSendPermissions.remove(game.getId());
+        Map<String, Map<Permission, Integer>> previous = previousSendPermissions.remove(game.getId());
         if (previous == null || previous.isEmpty()) { whenComplete.run(); return; }
         TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
         AtomicInteger pending = new AtomicInteger(previous.size());
-        for (Map.Entry<String, Integer> entry : previous.entrySet()) {
+        for (Map.Entry<String, Map<Permission, Integer>> entry : previous.entrySet()) {
             event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(entry.getKey()).queue(member -> {
                 net.dv8tion.jda.api.requests.restaction.PermissionOverrideAction action =
-                        channel.upsertPermissionOverride(member).clear(Permission.MESSAGE_SEND);
-                if (entry.getValue() > 0) action.grant(Permission.MESSAGE_SEND);
-                else if (entry.getValue() < 0) action.deny(Permission.MESSAGE_SEND);
+                        channel.upsertPermissionOverride(member).clear(CHAT_SEND_PERMISSIONS);
+                EnumSet<Permission> allowed = permissionsWithState(entry.getValue(), 1);
+                EnumSet<Permission> denied = permissionsWithState(entry.getValue(), -1);
+                if (!allowed.isEmpty()) action.grant(allowed);
+                if (!denied.isEmpty()) action.deny(denied);
                 action.queue(ignored -> completeSpeechLock(pending, whenComplete), error -> {
                     System.err.println("발언권 복구 실패: " + error.getMessage());
                     completeSpeechLock(pending, whenComplete);
@@ -491,12 +517,11 @@ public final class ButtonManager extends ListenerAdapter {
         TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
         event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(playerId).queue(member -> {
             PermissionOverride override = channel.getPermissionOverride(member);
-            int original = override == null ? 0 : override.getAllowed().contains(Permission.MESSAGE_SEND) ? 1
-                    : override.getDenied().contains(Permission.MESSAGE_SEND) ? -1 : 0;
+            Map<Permission, Integer> original = snapshotSendPermissions(override);
             synchronized (deadSendPermissions) {
                 deadSendPermissions.computeIfAbsent(game.getId(), ignored -> new HashMap<>()).put(playerId, original);
             }
-            channel.upsertPermissionOverride(member).deny(Permission.MESSAGE_SEND).queue(
+            channel.upsertPermissionOverride(member).deny(CHAT_SEND_PERMISSIONS).queue(
                     ignored -> whenComplete.run(),
                     error -> { System.err.println("사망 플레이어 발언 제한 실패: " + error.getMessage()); whenComplete.run(); });
         }, error -> {
@@ -506,19 +531,39 @@ public final class ButtonManager extends ListenerAdapter {
     }
 
     private void restoreDeadSpeechPermissions(ButtonInteractionEvent event, Game game) {
-        Map<String, Integer> previous;
+        Map<String, Map<Permission, Integer>> previous;
         synchronized (deadSendPermissions) { previous = deadSendPermissions.remove(game.getId()); }
         if (previous == null) return;
         TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
-        for (Map.Entry<String, Integer> entry : previous.entrySet()) {
+        for (Map.Entry<String, Map<Permission, Integer>> entry : previous.entrySet()) {
             event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(entry.getKey()).queue(member -> {
                 net.dv8tion.jda.api.requests.restaction.PermissionOverrideAction action =
-                        channel.upsertPermissionOverride(member).clear(Permission.MESSAGE_SEND);
-                if (entry.getValue() > 0) action.grant(Permission.MESSAGE_SEND);
-                else if (entry.getValue() < 0) action.deny(Permission.MESSAGE_SEND);
+                        channel.upsertPermissionOverride(member).clear(CHAT_SEND_PERMISSIONS);
+                EnumSet<Permission> allowed = permissionsWithState(entry.getValue(), 1);
+                EnumSet<Permission> denied = permissionsWithState(entry.getValue(), -1);
+                if (!allowed.isEmpty()) action.grant(allowed);
+                if (!denied.isEmpty()) action.deny(denied);
                 action.queue(null, error -> System.err.println("게임 종료 후 발언권 복구 실패: " + error.getMessage()));
             }, error -> System.err.println("게임 종료 후 참가자 조회 실패: " + error.getMessage()));
         }
+    }
+
+    private Map<Permission, Integer> snapshotSendPermissions(PermissionOverride override) {
+        Map<Permission, Integer> snapshot = new EnumMap<>(Permission.class);
+        for (Permission permission : CHAT_SEND_PERMISSIONS) {
+            int state = override == null ? 0 : override.getAllowed().contains(permission) ? 1
+                    : override.getDenied().contains(permission) ? -1 : 0;
+            snapshot.put(permission, state);
+        }
+        return snapshot;
+    }
+
+    private EnumSet<Permission> permissionsWithState(Map<Permission, Integer> snapshot, int expectedState) {
+        EnumSet<Permission> permissions = EnumSet.noneOf(Permission.class);
+        for (Permission permission : CHAT_SEND_PERMISSIONS) {
+            if (snapshot.getOrDefault(permission, 0) == expectedState) permissions.add(permission);
+        }
+        return permissions;
     }
 
     private void continueAfterDay(ButtonInteractionEvent event, Game game) {
@@ -526,6 +571,7 @@ public final class ButtonManager extends ListenerAdapter {
         if (winner != null) {
             sendAnnouncement(event, game, "게임 결과", winner);
             restoreDeadSpeechPermissions(event, game);
+            participantHooks.remove(game.getId());
         } else {
             startNight(event, game);
         }
@@ -570,5 +616,15 @@ public final class ButtonManager extends ListenerAdapter {
                         .build())
                 .setEphemeral(true)
                 .queue();
+    }
+
+    private void replyEphemeral(ButtonInteractionEvent event, Game game, String title, String message, int color) {
+        event.replyEmbeds(new EmbedBuilder().setTitle(title).setDescription(message).setColor(color).build())
+                .setEphemeral(true)
+                .queue(hook -> rememberHook(game, event.getUser().getId(), hook));
+    }
+
+    private void rememberHook(Game game, String playerId, InteractionHook hook) {
+        participantHooks.computeIfAbsent(game.getId(), ignored -> new ConcurrentHashMap<>()).put(playerId, hook);
     }
 }

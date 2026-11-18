@@ -2,6 +2,7 @@ package mafia.bot;
 
 import mafia.game.Game;
 import mafia.game.GameManager;
+import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
@@ -26,6 +27,18 @@ public final class CommandManager extends ListenerAdapter {
             event.replyEmbeds(new EmbedBuilder()
                             .setTitle("게임 생성 실패")
                             .setDescription("서버의 텍스트 채널에서만 게임을 생성할 수 있습니다.")
+                            .setColor(0xED4245)
+                            .build())
+                    .setEphemeral(true)
+                    .queue();
+            return;
+        }
+
+        TextChannel channel = (TextChannel) event.getChannel();
+        if (!event.getGuild().getSelfMember().hasPermission(channel, Permission.MANAGE_PERMISSIONS)) {
+            event.replyEmbeds(new EmbedBuilder()
+                            .setTitle("게임 생성 실패")
+                            .setDescription("사망자 채팅 제한을 위해 봇에 채널 권한 관리 권한이 필요합니다.")
                             .setColor(0xED4245)
                             .build())
                     .setEphemeral(true)
