@@ -261,7 +261,7 @@ public final class ButtonManager extends ListenerAdapter {
         Runnable announceMorning = () -> {
             String winner = game.checkWinner();
             if (winner != null) {
-                sendAnnouncement(event, game, "게임 결과", winner);
+                announceGameEnd(event, game, winner);
                 restoreDeadSpeechPermissions(event, game);
                 participantHooks.remove(game.getId());
             } else {
@@ -569,7 +569,7 @@ public final class ButtonManager extends ListenerAdapter {
     private void continueAfterDay(ButtonInteractionEvent event, Game game) {
         String winner = game.checkWinner();
         if (winner != null) {
-            sendAnnouncement(event, game, "게임 결과", winner);
+            announceGameEnd(event, game, winner);
             restoreDeadSpeechPermissions(event, game);
             participantHooks.remove(game.getId());
         } else {
@@ -597,6 +597,22 @@ public final class ButtonManager extends ListenerAdapter {
         event.getJDA().getTextChannelById(game.getChannelId()).sendMessageEmbeds(new EmbedBuilder()
                         .setTitle(title).setDescription(message).setColor(0x5865F2).build())
                 .queue(null, error -> System.err.println("게임 안내 전송 실패: " + error.getMessage()));
+    }
+
+    private void announceGameEnd(ButtonInteractionEvent event, Game game, String winner) {
+        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
+        channel.sendMessageEmbeds(new EmbedBuilder().setTitle("게임 결과")
+                        .setDescription(winner).setColor(0x5865F2).build())
+                .queue(ignored -> {
+                    StringBuilder roles = new StringBuilder();
+                    for (Player player : game.getPlayers()) {
+                        if (roles.length() > 0) roles.append('\n');
+                        roles.append(player.getNickname()).append(" - ").append(player.getRole());
+                    }
+                    channel.sendMessageEmbeds(new EmbedBuilder().setTitle("직업 배정 결과")
+                                    .setDescription(roles.toString()).setColor(0x5865F2).build())
+                            .queue(null, error -> System.err.println("직업 결과 전송 실패: " + error.getMessage()));
+                }, error -> System.err.println("게임 결과 전송 실패: " + error.getMessage()));
     }
 
     private void updateLobby(ButtonInteractionEvent event, Game game) {
