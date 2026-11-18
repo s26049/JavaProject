@@ -8,7 +8,7 @@ public final class GameManager {
 
     public synchronized Game createGameIfNoLobby(String guildId, String channelId) {
         boolean lobbyExists = games.values().stream()
-                .anyMatch(game -> game.getGuildId().equals(guildId));
+                .anyMatch(game -> game.getGuildId().equals(guildId) && !game.isFinished());
         if (lobbyExists) {
             return null;
         }

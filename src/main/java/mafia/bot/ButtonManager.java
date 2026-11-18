@@ -7,9 +7,17 @@ import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
 import net.dv8tion.jda.api.components.buttons.Button;
+import net.dv8tion.jda.api.Permission;
+import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.PermissionOverride;
+import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.utils.messages.MessageEditBuilder;
 import java.util.Map;
+import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +31,10 @@ public final class ButtonManager extends ListenerAdapter {
     private static final String JOIN_PREFIX = "mafia:join:";
     private static final String CANCEL_PREFIX = "mafia:cancel:";
     private static final String NIGHT_PREFIX = "mafia:night:";
+    private static final String VOTE_PREFIX = "mafia:vote:";
+    private static final String TRIAL_PREFIX = "mafia:trial:";
+    private final Map<String, Map<String, Integer>> previousSendPermissions = new HashMap<>();
+    private final Map<String, Map<String, Integer>> deadSendPermissions = new HashMap<>();
 
     private final GameManager gameManager;
 
@@ -43,6 +55,14 @@ public final class ButtonManager extends ListenerAdapter {
         String componentId = event.getComponentId();
         if (componentId.startsWith(NIGHT_PREFIX)) {
             handleNightAction(event, componentId);
+            return;
+        }
+        if (componentId.startsWith(VOTE_PREFIX)) {
+            handleVote(event, componentId);
+            return;
+        }
+        if (componentId.startsWith(TRIAL_PREFIX)) {
+            handleTrialVote(event, componentId);
             return;
         }
         boolean joining = componentId.startsWith(JOIN_PREFIX);
@@ -219,11 +239,22 @@ public final class ButtonManager extends ListenerAdapter {
     private void finishNight(ButtonInteractionEvent event, Game game, int version, int night) {
         String outcome = game.finishNight(version);
         if (outcome == null) return;
-        event.getJDA().getTextChannelById(game.getChannelId())
-                .sendMessageEmbeds(new EmbedBuilder().setTitle(night + "번째 낮")
-                        .setDescription(outcome + "\n대화를 통해 추리하세요.")
-                        .setColor(0x5865F2).build())
-                .queue(message -> startDayTimer(event, game));
+        Runnable announceMorning = () -> {
+            String winner = game.checkWinner();
+            if (winner != null) {
+                sendAnnouncement(event, game, "게임 결과", winner);
+                restoreDeadSpeechPermissions(event, game);
+            } else {
+                event.getJDA().getTextChannelById(game.getChannelId())
+                        .sendMessageEmbeds(new EmbedBuilder().setTitle(night + "번째 낮")
+                                .setDescription(outcome + "\n대화를 통해 추리하세요.")
+                                .setColor(0x5865F2).build())
+                        .queue(message -> startDayTimer(event, game));
+            }
+        };
+        String killedId = game.getRecentlyKilledId();
+        if (killedId == null) announceMorning.run();
+        else silencePlayer(event, game, killedId, announceMorning);
     }
 
     private void startDayTimer(ButtonInteractionEvent event, Game game) {
@@ -256,7 +287,264 @@ public final class ButtonManager extends ListenerAdapter {
         if (remainingSeconds > 0) {
             TIMER.schedule(() -> updateDayTimer(event, game, timerMessageId, remainingSeconds - 1),
                     1, TimeUnit.SECONDS);
+        } else {
+            startVote(event, game);
         }
+    }
+
+    private void startVote(ButtonInteractionEvent event, Game game) {
+        int version = game.beginVote();
+        if (version < 0) return;
+        List<Button> buttons = new ArrayList<>();
+        for (Player player : game.getAlivePlayers()) {
+            buttons.add(Button.primary(VOTE_PREFIX + game.getId() + ":" + player.getId(), player.getNickname()));
+        }
+        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
+        channel.sendMessageEmbeds(countdownEmbed("투표 시간", "의심되는 사람을 투표하세요.", 10))
+                .setComponents(buttonRows(buttons))
+                .queue(message -> TIMER.schedule(() -> updateVoteTimer(event, game, message.getId(), version, 9),
+                        1, TimeUnit.SECONDS),
+                        error -> System.err.println("투표 안내 전송 실패: " + error.getMessage()));
+    }
+
+    private void updateVoteTimer(ButtonInteractionEvent event, Game game, String messageId, int version, int remaining) {
+        if (game.isFinished()) return;
+        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
+        channel.editMessageEmbedsById(messageId, countdownEmbed("투표 시간", "의심되는 사람을 투표하세요.", remaining))
+                .queue(null, error -> System.err.println("투표 타이머 갱신 실패: " + error.getMessage()));
+        if (remaining > 0) {
+            TIMER.schedule(() -> updateVoteTimer(event, game, messageId, version, remaining - 1), 1, TimeUnit.SECONDS);
+        } else {
+            Game.VoteResult result = game.finishVote(version);
+            if (result != null) finishVote(event, game, result);
+        }
+    }
+
+    private void finishVote(ButtonInteractionEvent event, Game game, Game.VoteResult result) {
+        StringBuilder body = new StringBuilder();
+        result.getCounts().entrySet().stream()
+                .sorted((left, right) -> Integer.compare(right.getValue(), left.getValue()))
+                .forEach(entry -> body.append("`").append(game.getPlayerName(entry.getKey()))
+                        .append("` — ").append(entry.getValue()).append("표\n"));
+        if (body.length() == 0) body.append("\u200B");
+        sendAnnouncement(event, game, "투표 결과", body.toString().trim());
+        if (result.getCandidateId() == null) {
+            sendAnnouncement(event, game, "투표 결과", "처형될 대상을 고르지 못했습니다.");
+            continueAfterDay(event, game);
+            return;
+        }
+        startDefense(event, game, result.getCandidateId());
+    }
+
+    private void startDefense(ButtonInteractionEvent event, Game game, String candidateId) {
+        int version = game.beginTrial(candidateId);
+        if (version < 0) return;
+        applyDefenseSpeechLock(event, game, candidateId,
+                () -> sendDefenseTimer(event, game, candidateId, version));
+    }
+
+    private void sendDefenseTimer(ButtonInteractionEvent event, Game game, String candidateId, int version) {
+        String candidate = game.getPlayerName(candidateId);
+        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
+        channel.sendMessageEmbeds(countdownEmbed(candidate, "최후의 반론", 10))
+                .queue(message -> TIMER.schedule(() -> updateDefenseTimer(event, game, message.getId(),
+                                candidateId, version, 9), 1, TimeUnit.SECONDS),
+                        error -> System.err.println("최후의 반론 안내 전송 실패: " + error.getMessage()));
+    }
+
+    private void updateDefenseTimer(ButtonInteractionEvent event, Game game, String messageId,
+                                    String candidateId, int version, int remaining) {
+        if (game.isFinished()) return;
+        event.getJDA().getTextChannelById(game.getChannelId())
+                .editMessageEmbedsById(messageId, countdownEmbed(game.getPlayerName(candidateId), "최후의 반론", remaining))
+                .queue(null, error -> System.err.println("최후의 반론 타이머 갱신 실패: " + error.getMessage()));
+        if (remaining > 0) {
+            TIMER.schedule(() -> updateDefenseTimer(event, game, messageId, candidateId, version, remaining - 1),
+                    1, TimeUnit.SECONDS);
+        } else {
+            restoreSpeechPermissions(event, game, () -> startTrialVote(event, game, candidateId));
+        }
+    }
+
+    private void startTrialVote(ButtonInteractionEvent event, Game game, String candidateId) {
+        int version = game.getPhaseVersion();
+        if (version < 0) return;
+        List<Button> buttons = List.of(
+                Button.success(TRIAL_PREFIX + game.getId() + ":approve", "찬성"),
+                Button.danger(TRIAL_PREFIX + game.getId() + ":oppose", "반대"));
+        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
+        channel.sendMessageEmbeds(countdownEmbed("최후의 반론", "`" + game.getPlayerName(candidateId)
+                        + "`의 처형 여부를 결정해주세요.", 5))
+                .setComponents(ActionRow.of(buttons))
+                .queue(message -> TIMER.schedule(() -> updateTrialTimer(event, game, message.getId(),
+                                candidateId, version, 4), 1, TimeUnit.SECONDS),
+                        error -> System.err.println("찬반 투표 안내 전송 실패: " + error.getMessage()));
+    }
+
+    private void updateTrialTimer(ButtonInteractionEvent event, Game game, String messageId,
+                                  String candidateId, int version, int remaining) {
+        if (game.isFinished()) return;
+        event.getJDA().getTextChannelById(game.getChannelId())
+                .editMessageEmbedsById(messageId, countdownEmbed("최후의 반론", "`"
+                        + game.getPlayerName(candidateId) + "`의 처형 여부를 결정해주세요.", remaining))
+                .queue(null, error -> System.err.println("찬반 투표 타이머 갱신 실패: " + error.getMessage()));
+        if (remaining > 0) {
+            TIMER.schedule(() -> updateTrialTimer(event, game, messageId, candidateId, version, remaining - 1),
+                    1, TimeUnit.SECONDS);
+        } else {
+            Boolean executed = game.finishTrial(version);
+            if (executed == null) return;
+            sendAnnouncement(event, game, "최후의 반론", executed
+                    ? "`" + game.getPlayerName(candidateId) + "`님이 투표로 처형당하였습니다."
+                    : "`" + game.getPlayerName(candidateId) + "`님의 처형이 부결되었습니다.");
+            if (executed) silencePlayer(event, game, candidateId, () -> continueAfterDay(event, game));
+            else continueAfterDay(event, game);
+        }
+    }
+
+    private void handleVote(ButtonInteractionEvent event, String componentId) {
+        String[] parts = componentId.split(":", 4);
+        if (parts.length != 4) return;
+        Game game = gameManager.getGame(parts[2]);
+        boolean accepted = game != null && event.getGuild() != null
+                && game.getGuildId().equals(event.getGuild().getId())
+                && game.getChannelId().equals(event.getChannel().getId())
+                && game.castVote(event.getUser().getId(), parts[3]);
+        replyEphemeral(event, accepted ? "투표 완료" : "투표 실패",
+                accepted ? "투표가 접수되었습니다." : "생존한 참가자는 한 번만 투표할 수 있습니다.", accepted ? 0x57F287 : 0xED4245);
+    }
+
+    private void handleTrialVote(ButtonInteractionEvent event, String componentId) {
+        String[] parts = componentId.split(":", 4);
+        if (parts.length != 4) return;
+        Game game = gameManager.getGame(parts[2]);
+        boolean approve = parts[3].equals("approve");
+        boolean accepted = game != null && event.getGuild() != null
+                && game.getGuildId().equals(event.getGuild().getId())
+                && game.getChannelId().equals(event.getChannel().getId())
+                && (approve || parts[3].equals("oppose"))
+                && game.castTrialVote(event.getUser().getId(), approve);
+        replyEphemeral(event, accepted ? "찬반 투표 완료" : "투표 실패",
+                accepted ? "찬반 투표가 접수되었습니다." : "후보자 외 생존 참가자는 한 번만 투표할 수 있습니다.", accepted ? 0x57F287 : 0xED4245);
+    }
+
+    private void applyDefenseSpeechLock(ButtonInteractionEvent event, Game game, String candidateId,
+                                        Runnable whenComplete) {
+        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
+        Map<String, Integer> previous = new HashMap<>();
+        previousSendPermissions.put(game.getId(), previous);
+        List<Player> players = game.getPlayers();
+        AtomicInteger pending = new AtomicInteger(players.size());
+        if (players.isEmpty()) {
+            whenComplete.run();
+            return;
+        }
+        for (Player player : game.getPlayers()) {
+            event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(player.getId()).queue(member -> {
+                PermissionOverride override = channel.getPermissionOverride(member);
+                int original = override == null ? 0 : override.getAllowed().contains(Permission.MESSAGE_SEND) ? 1
+                        : override.getDenied().contains(Permission.MESSAGE_SEND) ? -1 : 0;
+                synchronized (previous) { previous.put(player.getId(), original); }
+                if (player.getId().equals(candidateId)) {
+                    channel.upsertPermissionOverride(member).grant(Permission.MESSAGE_SEND).queue(
+                            ignored -> completeSpeechLock(pending, whenComplete),
+                            error -> { System.err.println("최후의 반론 발언권 설정 실패: " + error.getMessage()); completeSpeechLock(pending, whenComplete); });
+                } else {
+                    channel.upsertPermissionOverride(member).deny(Permission.MESSAGE_SEND).queue(
+                            ignored -> completeSpeechLock(pending, whenComplete),
+                            error -> { System.err.println("최후의 반론 발언권 설정 실패: " + error.getMessage()); completeSpeechLock(pending, whenComplete); });
+                }
+            }, error -> {
+                System.err.println("최후의 반론 참가자 조회 실패: " + error.getMessage());
+                completeSpeechLock(pending, whenComplete);
+            });
+        }
+    }
+
+    private void completeSpeechLock(AtomicInteger pending, Runnable whenComplete) {
+        if (pending.decrementAndGet() == 0) whenComplete.run();
+    }
+
+    private void restoreSpeechPermissions(ButtonInteractionEvent event, Game game, Runnable whenComplete) {
+        Map<String, Integer> previous = previousSendPermissions.remove(game.getId());
+        if (previous == null || previous.isEmpty()) { whenComplete.run(); return; }
+        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
+        AtomicInteger pending = new AtomicInteger(previous.size());
+        for (Map.Entry<String, Integer> entry : previous.entrySet()) {
+            event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(entry.getKey()).queue(member -> {
+                net.dv8tion.jda.api.requests.restaction.PermissionOverrideAction action =
+                        channel.upsertPermissionOverride(member).clear(Permission.MESSAGE_SEND);
+                if (entry.getValue() > 0) action.grant(Permission.MESSAGE_SEND);
+                else if (entry.getValue() < 0) action.deny(Permission.MESSAGE_SEND);
+                action.queue(ignored -> completeSpeechLock(pending, whenComplete), error -> {
+                    System.err.println("발언권 복구 실패: " + error.getMessage());
+                    completeSpeechLock(pending, whenComplete);
+                });
+            }, error -> {
+                System.err.println("발언권 복구 대상 조회 실패: " + error.getMessage());
+                completeSpeechLock(pending, whenComplete);
+            });
+        }
+    }
+
+    private void silencePlayer(ButtonInteractionEvent event, Game game, String playerId, Runnable whenComplete) {
+        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
+        event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(playerId).queue(member -> {
+            PermissionOverride override = channel.getPermissionOverride(member);
+            int original = override == null ? 0 : override.getAllowed().contains(Permission.MESSAGE_SEND) ? 1
+                    : override.getDenied().contains(Permission.MESSAGE_SEND) ? -1 : 0;
+            synchronized (deadSendPermissions) {
+                deadSendPermissions.computeIfAbsent(game.getId(), ignored -> new HashMap<>()).put(playerId, original);
+            }
+            channel.upsertPermissionOverride(member).deny(Permission.MESSAGE_SEND).queue(
+                    ignored -> whenComplete.run(),
+                    error -> { System.err.println("사망 플레이어 발언 제한 실패: " + error.getMessage()); whenComplete.run(); });
+        }, error -> {
+            System.err.println("사망 플레이어 조회 실패: " + error.getMessage());
+            whenComplete.run();
+        });
+    }
+
+    private void restoreDeadSpeechPermissions(ButtonInteractionEvent event, Game game) {
+        Map<String, Integer> previous;
+        synchronized (deadSendPermissions) { previous = deadSendPermissions.remove(game.getId()); }
+        if (previous == null) return;
+        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
+        for (Map.Entry<String, Integer> entry : previous.entrySet()) {
+            event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(entry.getKey()).queue(member -> {
+                net.dv8tion.jda.api.requests.restaction.PermissionOverrideAction action =
+                        channel.upsertPermissionOverride(member).clear(Permission.MESSAGE_SEND);
+                if (entry.getValue() > 0) action.grant(Permission.MESSAGE_SEND);
+                else if (entry.getValue() < 0) action.deny(Permission.MESSAGE_SEND);
+                action.queue(null, error -> System.err.println("게임 종료 후 발언권 복구 실패: " + error.getMessage()));
+            }, error -> System.err.println("게임 종료 후 참가자 조회 실패: " + error.getMessage()));
+        }
+    }
+
+    private void continueAfterDay(ButtonInteractionEvent event, Game game) {
+        String winner = game.checkWinner();
+        if (winner != null) {
+            sendAnnouncement(event, game, "게임 결과", winner);
+            restoreDeadSpeechPermissions(event, game);
+        } else {
+            startNight(event, game);
+        }
+    }
+
+    private List<net.dv8tion.jda.api.components.MessageTopLevelComponent> buttonRows(List<Button> buttons) {
+        List<net.dv8tion.jda.api.components.MessageTopLevelComponent> rows = new ArrayList<>();
+        for (int i = 0; i < buttons.size(); i += 5) {
+            rows.add(ActionRow.of(buttons.subList(i, Math.min(i + 5, buttons.size()))));
+        }
+        return rows;
+    }
+
+    private net.dv8tion.jda.api.entities.MessageEmbed countdownEmbed(String title, String prompt, int seconds) {
+        int minutes = seconds / 60;
+        int remainder = seconds % 60;
+        return new EmbedBuilder().setTitle(title)
+                .setDescription(prompt + "\n남은 시간: ⏳" + String.format("%02d:%02d", minutes, remainder))
+                .setColor(0x5865F2).build();
     }
 
     private void sendAnnouncement(ButtonInteractionEvent event, Game game, String title, String message) {
