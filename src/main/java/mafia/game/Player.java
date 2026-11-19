@@ -1,9 +1,11 @@
 package mafia.game;
 
+import mafia.role.Role;
+
 public final class Player {
     private final String id;
     private final String nickname;
-    private String role;
+    private Role role;
     private boolean alive = true;
 
     public Player(String id, String nickname) {
@@ -19,8 +21,9 @@ public final class Player {
         return nickname;
     }
 
-    public synchronized String getRole() { return role; }
-    public synchronized void setRole(String role) { this.role = role; }
+    public synchronized Role getRole() { return role; }
+    public synchronized void setRole(Role role) { this.role = role; }
+    public synchronized String getRoleName() { return role == null ? null : role.getName(); }
     public synchronized boolean isAlive() { return alive; }
     public synchronized void kill() { alive = false; }
 }

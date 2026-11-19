@@ -2,7 +2,14 @@ package mafia.bot;
 
 import mafia.game.Game;
 import mafia.game.GameManager;
+import mafia.game.GameTimer;
 import mafia.game.Player;
+import mafia.game.VoteManager;
+import mafia.action.NightAction;
+import mafia.action.NightAbility;
+import mafia.role.Faction;
+import mafia.role.Mafia;
+import mafia.role.Role;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
@@ -21,16 +28,10 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 public final class ButtonManager extends ListenerAdapter {
-    private static final ScheduledExecutorService TIMER = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread thread = new Thread(r, "mafia-countdown");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final GameTimer gameTimer = new GameTimer();
     private static final String JOIN_PREFIX = "mafia:join:";
     private static final String CANCEL_PREFIX = "mafia:cancel:";
     private static final String NIGHT_PREFIX = "mafia:night:";
@@ -144,7 +145,7 @@ public final class ButtonManager extends ListenerAdapter {
         int version = game.beginCountdown();
         if (version < 0) return;
         sendAnnouncement(event, game, "게임 시작 안내", "⏳5초 후 게임이 시작됩니다!");
-        TIMER.schedule(() -> countdownTick(event, game, version), 1, TimeUnit.SECONDS);
+        gameTimer.schedule(() -> countdownTick(event, game, version), 1, TimeUnit.SECONDS);
     }
 
     private void countdownTick(ButtonInteractionEvent event, Game game, int version) {
@@ -157,28 +158,27 @@ public final class ButtonManager extends ListenerAdapter {
         }
         if (seconds > 0) {
             sendAnnouncement(event, game, "게임 시작 안내", "⏳" + seconds + "초 후 게임이 시작됩니다!");
-            TIMER.schedule(() -> countdownTick(event, game, version), 1, TimeUnit.SECONDS);
+            gameTimer.schedule(() -> countdownTick(event, game, version), 1, TimeUnit.SECONDS);
         } else if (seconds == 0) {
-            Map<Player, String> roles = game.startAndAssignRoles();
+            Map<Player, Role> roles = game.startAndAssignRoles();
             if (roles == null) return;
-            for (Map.Entry<Player, String> assignment : roles.entrySet()) sendRoleNotice(game, assignment, roles);
+            for (Map.Entry<Player, Role> assignment : roles.entrySet()) sendRoleNotice(game, assignment, roles);
             startNight(event, game);
         }
     }
 
-    private void sendRoleNotice(Game game, Map.Entry<Player, String> assignment, Map<Player, String> roles) {
-        String role = assignment.getValue();
-        String description = "당신의 직업은 `" + role + "` 입니다!";
-        if (role.equals("마피아")) {
-            String partners = roles.entrySet().stream().filter(entry -> entry.getValue().equals("마피아")
+    private void sendRoleNotice(Game game, Map.Entry<Player, Role> assignment, Map<Player, Role> roles) {
+        Role role = assignment.getValue();
+        String description = "당신의 직업은 `" + role.getName() + "` 입니다!";
+        if (role instanceof Mafia) {
+            String partners = roles.entrySet().stream().filter(entry -> entry.getValue() instanceof Mafia
                     && !entry.getKey().equals(assignment.getKey())).map(entry -> entry.getKey().getNickname())
                     .findFirst().orElse("알 수 없음");
             description += "\n당신의 동료 마피아는 `" + partners + "`님입니다.";
         }
-        final String roleDescription = description;
-        int color = role.equals("마피아") ? 0xED4245 : 0x5865F2;
+        int color = role.getFaction() == Faction.MAFIA ? 0xED4245 : 0x5865F2;
         sendPrivateEmbed(game, assignment.getKey().getId(), new EmbedBuilder()
-                .setTitle("직업 배정 안내").setDescription(roleDescription).setColor(color).build());
+                .setTitle("직업 배정 안내").setDescription(description).setColor(color).build());
     }
 
     private void startNight(ButtonInteractionEvent event, Game game) {
@@ -188,21 +188,21 @@ public final class ButtonManager extends ListenerAdapter {
         sendAnnouncement(event, game, night + "번째 밤", "수상한 움직임에 주목하세요.");
         for (Player player : game.getPlayers()) {
             if (!player.isAlive()) continue;
-            String role = player.getRole();
-            String ability = role.equals("마피아") ? "mafia" : role.equals("경찰") ? "police" : role.equals("의사") ? "doctor" : null;
-            if (ability != null) sendNightPrompt(event, game, player, ability, night);
+            Role role = player.getRole();
+            if (role instanceof NightAction) {
+                NightAction action = (NightAction) role;
+                sendNightPrompt(event, game, player, action.getAbility(), action.getPrompt(), night);
+            }
         }
-        TIMER.schedule(() -> finishNight(event, game, version, night), 10, TimeUnit.SECONDS);
+        gameTimer.schedule(() -> finishNight(event, game, version, night), 10, TimeUnit.SECONDS);
     }
 
-    private void sendNightPrompt(ButtonInteractionEvent event, Game game, Player actor, String ability, int night) {
-        String prompt = ability.equals("mafia") ? "살해할 사람을 선택해주세요."
-                : ability.equals("police") ? "조사할 사람을 선택해주세요."
-                : "치료할 사람을 선택해주세요.";
+    private void sendNightPrompt(ButtonInteractionEvent event, Game game, Player actor, NightAbility ability,
+                                 String prompt, int night) {
         List<Button> buttons = new ArrayList<>();
         for (Player target : game.getPlayers()) {
-            if (!target.isAlive() || (ability.equals("mafia") && target.getRole().equals("마피아"))) continue;
-            buttons.add(Button.primary(NIGHT_PREFIX + ability + ":" + game.getId() + ":" + target.getId(), target.getNickname()));
+            if (!target.isAlive() || (ability == NightAbility.MAFIA_EXECUTION && target.getRole() instanceof Mafia)) continue;
+            buttons.add(Button.primary(NIGHT_PREFIX + ability.getComponentId() + ":" + game.getId() + ":" + target.getId(), target.getNickname()));
         }
         sendPrivateEmbed(game, actor.getId(), new EmbedBuilder()
                         .setTitle(night + "번째 밤").setDescription(prompt).setColor(0x5865F2).build(),
@@ -228,14 +228,14 @@ public final class ButtonManager extends ListenerAdapter {
     private void handleNightAction(ButtonInteractionEvent event, String componentId) {
         String[] parts = componentId.split(":", 5);
         if (parts.length != 5) return;
-        String ability = parts[2];
+        NightAbility ability = NightAbility.fromComponentId(parts[2]);
         Game game = gameManager.getGame(parts[3]);
         String targetId = parts[4];
-        if (game == null || !game.isNightOpen() || !game.isAlive(event.getUser().getId())) {
+        if (ability == null || game == null || !game.isNightOpen() || !game.isAlive(event.getUser().getId())) {
             replyEphemeral(event, "능력 사용 실패", "이 밤에는 능력을 사용할 수 없습니다.", 0xED4245);
             return;
         }
-        if (ability.equals("police")) {
+        if (ability == NightAbility.POLICE_SEARCH) {
             if (!game.selectNightTarget(event.getUser().getId(), targetId, ability)) {
                 replyEphemeral(event, "수색 실패", "이미 수색했거나 해당 대상을 조사할 수 없습니다.", 0xED4245);
                 return;
@@ -252,7 +252,7 @@ public final class ButtonManager extends ListenerAdapter {
             return;
         }
         replyEphemeral(event, game, "능력 사용 안내",
-                ability.equals("mafia") ? "처형 대상을 선택했습니다. 동료와 선택이 공유됩니다." : "치료 대상을 선택했습니다.", 0x57F287);
+                ability == NightAbility.MAFIA_EXECUTION ? "처형 대상을 선택했습니다. 동료와 선택이 공유됩니다." : "치료 대상을 선택했습니다.", 0x57F287);
     }
 
     private void finishNight(ButtonInteractionEvent event, Game game, int version, int night) {
@@ -287,7 +287,7 @@ public final class ButtonManager extends ListenerAdapter {
                         .setDescription("⌛" + time).setColor(0x5865F2).build())
                 .queue(message -> {
                     if (remainingSeconds > 0) {
-                        TIMER.schedule(() -> updateDayTimer(event, game, message.getId(), remainingSeconds - 1),
+                        gameTimer.schedule(() -> updateDayTimer(event, game, message.getId(), remainingSeconds - 1),
                                 1, TimeUnit.SECONDS);
                     }
                 }, error -> System.err.println("낮 타이머 메시지 전송 실패: " + error.getMessage()));
@@ -305,7 +305,7 @@ public final class ButtonManager extends ListenerAdapter {
                         .build())
                 .queue(null, error -> System.err.println("낮 타이머 메시지 갱신 실패: " + error.getMessage()));
         if (remainingSeconds > 0) {
-            TIMER.schedule(() -> updateDayTimer(event, game, timerMessageId, remainingSeconds - 1),
+            gameTimer.schedule(() -> updateDayTimer(event, game, timerMessageId, remainingSeconds - 1),
                     1, TimeUnit.SECONDS);
         } else {
             startVote(event, game);
@@ -322,7 +322,7 @@ public final class ButtonManager extends ListenerAdapter {
         TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
         channel.sendMessageEmbeds(countdownEmbed("투표 시간", "의심되는 사람을 선택하세요.", 10))
                 .setComponents(buttonRows(buttons))
-                .queue(message -> TIMER.schedule(() -> updateVoteTimer(event, game, message.getId(), version, 9),
+                .queue(message -> gameTimer.schedule(() -> updateVoteTimer(event, game, message.getId(), version, 9),
                         1, TimeUnit.SECONDS),
                         error -> System.err.println("투표 안내 전송 실패: " + error.getMessage()));
     }
@@ -333,14 +333,14 @@ public final class ButtonManager extends ListenerAdapter {
         channel.editMessageEmbedsById(messageId, countdownEmbed("투표 시간", "의심되는 사람을 투표하세요.", remaining))
                 .queue(null, error -> System.err.println("투표 타이머 갱신 실패: " + error.getMessage()));
         if (remaining > 0) {
-            TIMER.schedule(() -> updateVoteTimer(event, game, messageId, version, remaining - 1), 1, TimeUnit.SECONDS);
+            gameTimer.schedule(() -> updateVoteTimer(event, game, messageId, version, remaining - 1), 1, TimeUnit.SECONDS);
         } else {
-            Game.VoteResult result = game.finishVote(version);
+            VoteManager.VoteResult result = game.finishVote(version);
             if (result != null) finishVote(event, game, result);
         }
     }
 
-    private void finishVote(ButtonInteractionEvent event, Game game, Game.VoteResult result) {
+    private void finishVote(ButtonInteractionEvent event, Game game, VoteManager.VoteResult result) {
         StringBuilder body = new StringBuilder();
         result.getCounts().entrySet().stream()
                 .sorted((left, right) -> Integer.compare(right.getValue(), left.getValue()))
@@ -367,7 +367,7 @@ public final class ButtonManager extends ListenerAdapter {
         String candidate = game.getPlayerName(candidateId);
         TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
         channel.sendMessageEmbeds(countdownEmbed(candidate, "최후의 반론", 10))
-                .queue(message -> TIMER.schedule(() -> updateDefenseTimer(event, game, message.getId(),
+                .queue(message -> gameTimer.schedule(() -> updateDefenseTimer(event, game, message.getId(),
                                 candidateId, version, 9), 1, TimeUnit.SECONDS),
                         error -> System.err.println("최후의 반론 안내 전송 실패: " + error.getMessage()));
     }
@@ -379,7 +379,7 @@ public final class ButtonManager extends ListenerAdapter {
                 .editMessageEmbedsById(messageId, countdownEmbed(game.getPlayerName(candidateId), "최후의 반론", remaining))
                 .queue(null, error -> System.err.println("최후의 반론 타이머 갱신 실패: " + error.getMessage()));
         if (remaining > 0) {
-            TIMER.schedule(() -> updateDefenseTimer(event, game, messageId, candidateId, version, remaining - 1),
+            gameTimer.schedule(() -> updateDefenseTimer(event, game, messageId, candidateId, version, remaining - 1),
                     1, TimeUnit.SECONDS);
         } else {
             restoreSpeechPermissions(event, game, () -> startTrialVote(event, game, candidateId));
@@ -387,7 +387,7 @@ public final class ButtonManager extends ListenerAdapter {
     }
 
     private void startTrialVote(ButtonInteractionEvent event, Game game, String candidateId) {
-        int version = game.getPhaseVersion();
+        int version = game.beginTrialVote();
         if (version < 0) return;
         List<Button> buttons = List.of(
                 Button.success(TRIAL_PREFIX + game.getId() + ":approve", "찬성"),
@@ -396,7 +396,7 @@ public final class ButtonManager extends ListenerAdapter {
         channel.sendMessageEmbeds(countdownEmbed("최후의 반론", "`" + game.getPlayerName(candidateId)
                         + "`의 처형 여부를 결정해주세요.", 5))
                 .setComponents(ActionRow.of(buttons))
-                .queue(message -> TIMER.schedule(() -> updateTrialTimer(event, game, message.getId(),
+                .queue(message -> gameTimer.schedule(() -> updateTrialTimer(event, game, message.getId(),
                                 candidateId, version, 4), 1, TimeUnit.SECONDS),
                         error -> System.err.println("찬반 투표 안내 전송 실패: " + error.getMessage()));
     }
@@ -409,7 +409,7 @@ public final class ButtonManager extends ListenerAdapter {
                         + game.getPlayerName(candidateId) + "`의 처형 여부를 결정해주세요.", remaining))
                 .queue(null, error -> System.err.println("찬반 투표 타이머 갱신 실패: " + error.getMessage()));
         if (remaining > 0) {
-            TIMER.schedule(() -> updateTrialTimer(event, game, messageId, candidateId, version, remaining - 1),
+            gameTimer.schedule(() -> updateTrialTimer(event, game, messageId, candidateId, version, remaining - 1),
                     1, TimeUnit.SECONDS);
         } else {
             Boolean executed = game.finishTrial(version);
@@ -607,7 +607,7 @@ public final class ButtonManager extends ListenerAdapter {
                     StringBuilder roles = new StringBuilder();
                     for (Player player : game.getPlayers()) {
                         if (roles.length() > 0) roles.append('\n');
-                        roles.append(player.getNickname()).append(" - ").append(player.getRole());
+                        roles.append(player.getNickname()).append(" - ").append(player.getRoleName());
                     }
                     channel.sendMessageEmbeds(new EmbedBuilder().setTitle("직업 배정 결과")
                                     .setDescription(roles.toString()).setColor(0x5865F2).build())

@@ -1,119 +1,114 @@
 package mafia.game;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.UUID;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.HashMap;
+import mafia.role.Citizen;
+import mafia.action.NightAbility;
+import mafia.action.NightAction;
+import mafia.role.Doctor;
+import mafia.role.Faction;
+import mafia.role.Mafia;
+import mafia.role.Police;
+import mafia.role.Role;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.MessageEmbed;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 public final class Game {
     private static final int MAX_PLAYERS = 8;
 
-    private final String id;
+    private final String id = UUID.randomUUID().toString();
     private final String guildId;
     private final String channelId;
     private final Map<String, Player> players = new LinkedHashMap<>();
+    private final VoteManager voteManager = new VoteManager();
     private String lobbyMessageId;
-    private int countdownSeconds;
+    private GameState state = GameState.WAITING;
     private int countdownVersion;
-    private boolean started;
-    private boolean nightOpen;
     private int nightNumber;
     private int nightVersion;
+    private int phaseVersion;
     private String mafiaTargetId;
     private String doctorTargetId;
     private boolean policeUsed;
-    private boolean voteOpen;
-    private boolean trialOpen;
-    private boolean finished;
     private String trialCandidateId;
     private String winner;
     private String recentlyKilledId;
-    private int phaseVersion;
-    private final Map<String, String> votes = new HashMap<>();
-    private final Map<String, Boolean> trialVotes = new HashMap<>();
 
     public Game(String guildId, String channelId) {
-        this.id = UUID.randomUUID().toString();
         this.guildId = guildId;
         this.channelId = channelId;
     }
 
-    public String getId() {
-        return id;
-    }
+    public String getId() { return id; }
+    public String getGuildId() { return guildId; }
+    public String getChannelId() { return channelId; }
 
-    public String getGuildId() {
-        return guildId;
-    }
-
-    public String getChannelId() {
-        return channelId;
-    }
-
-    public synchronized void setLobbyMessageId(String lobbyMessageId) {
-        this.lobbyMessageId = lobbyMessageId;
-    }
-
-    public synchronized String getLobbyMessageId() {
-        return lobbyMessageId;
-    }
+    public synchronized void setLobbyMessageId(String lobbyMessageId) { this.lobbyMessageId = lobbyMessageId; }
+    public synchronized String getLobbyMessageId() { return lobbyMessageId; }
 
     public synchronized boolean addPlayer(Player player) {
-        if (started || players.size() >= MAX_PLAYERS || players.containsKey(player.getId())) {
-            return false;
-        }
+        if (state != GameState.WAITING || players.size() >= MAX_PLAYERS || players.containsKey(player.getId())) return false;
         players.put(player.getId(), player);
         return true;
     }
 
     public synchronized boolean removePlayer(String playerId) {
-        if (started) return false;
+        if (state != GameState.WAITING && state != GameState.COUNTDOWN) return false;
         boolean removed = players.remove(playerId) != null;
-        if (removed && !started && players.size() < MAX_PLAYERS) { countdownSeconds = 0; countdownVersion++; }
+        if (removed && players.size() < MAX_PLAYERS) {
+            state = GameState.WAITING;
+            countdownVersion++;
+        }
         return removed;
     }
 
-    public synchronized boolean hasPlayer(String playerId) {
-        return players.containsKey(playerId);
+    public synchronized boolean hasPlayer(String playerId) { return players.containsKey(playerId); }
+    public synchronized boolean isFull() { return players.size() == MAX_PLAYERS; }
+    public synchronized boolean isStarted() { return state != GameState.WAITING && state != GameState.COUNTDOWN; }
+    public synchronized GameState getState() { return state; }
+    public synchronized boolean isNightOpen() { return state == GameState.NIGHT; }
+    public synchronized boolean isFinished() { return state == GameState.FINISHED; }
+
+    public synchronized int nextCountdownSecond(int version) {
+        if (state != GameState.COUNTDOWN || version != countdownVersion || players.size() != MAX_PLAYERS) return -1;
+        return 5 - (int) Math.min(5, Math.max(0, System.currentTimeMillis() - countdownStartedAt) / 1000);
     }
 
-    public synchronized boolean isFull() { return players.size() == MAX_PLAYERS; }
-    public synchronized boolean isStarted() { return started; }
-    public synchronized int nextCountdownSecond(int version) {
-        if (version != countdownVersion) return -1;
-        if (started || players.size() != MAX_PLAYERS) { countdownSeconds = 0; return -1; }
-        countdownSeconds--;
-        return countdownSeconds;
-    }
+    private long countdownStartedAt;
+
     public synchronized int beginCountdown() {
-        if (started || players.size() != MAX_PLAYERS) return -1;
-        countdownSeconds = 5;
+        if (state != GameState.WAITING || players.size() != MAX_PLAYERS) return -1;
+        state = GameState.COUNTDOWN;
+        countdownStartedAt = System.currentTimeMillis();
         return ++countdownVersion;
     }
 
-    public synchronized Map<Player, String> startAndAssignRoles() {
-        if (started || players.size() != MAX_PLAYERS) return null;
-        started = true;
-        List<String> roles = new ArrayList<>(List.of("마피아", "마피아", "경찰", "의사", "시민", "시민", "시민", "시민"));
+    public synchronized Map<Player, Role> startAndAssignRoles() {
+        if (state != GameState.COUNTDOWN || players.size() != MAX_PLAYERS) return null;
+        List<Role> roles = new ArrayList<>(List.of(new Mafia(), new Mafia(), new Police(), new Doctor(),
+                new Citizen(), new Citizen(), new Citizen(), new Citizen()));
         Collections.shuffle(roles);
         List<Player> participants = new ArrayList<>(players.values());
-        Map<Player, String> assignments = new LinkedHashMap<>();
+        Map<Player, Role> assignments = new LinkedHashMap<>();
         for (int i = 0; i < participants.size(); i++) {
             participants.get(i).setRole(roles.get(i));
             assignments.put(participants.get(i), roles.get(i));
         }
+        state = GameState.DAY;
         return assignments;
     }
 
     public synchronized int beginNight() {
-        if (!started || nightOpen || voteOpen || trialOpen || finished) return -1;
-        nightOpen = true;
+        if (!isStarted() || state == GameState.NIGHT || state == GameState.VOTING
+                || state == GameState.DEFENSE || state == GameState.TRIAL || state == GameState.FINISHED) return -1;
+        state = GameState.NIGHT;
         nightVersion++;
+        phaseVersion++;
         mafiaTargetId = null;
         doctorTargetId = null;
         policeUsed = false;
@@ -124,31 +119,33 @@ public final class Game {
 
     public synchronized int getNightVersion() { return nightVersion; }
     public synchronized int getNightNumber() { return nightNumber; }
-    public synchronized boolean isNightOpen() { return nightOpen; }
+    public synchronized int getPhaseVersion() { return phaseVersion; }
+    public synchronized String getRecentlyKilledId() { return recentlyKilledId; }
     public synchronized List<Player> getPlayers() { return new ArrayList<>(players.values()); }
     public synchronized List<Player> getAlivePlayers() {
         return players.values().stream().filter(Player::isAlive).collect(java.util.stream.Collectors.toList());
     }
     public synchronized int getAliveCount() { return (int) players.values().stream().filter(Player::isAlive).count(); }
-    public synchronized boolean isFinished() { return finished; }
-    public synchronized int getPhaseVersion() { return phaseVersion; }
-    public synchronized String getRecentlyKilledId() { return recentlyKilledId; }
+    public synchronized Player getPlayer(String playerId) { return players.get(playerId); }
 
-    public synchronized boolean selectNightTarget(String actorId, String targetId, String ability) {
+    public synchronized boolean selectNightTarget(String actorId, String targetId, NightAbility ability) {
         Player actor = players.get(actorId);
         Player target = players.get(targetId);
-        if (!nightOpen || actor == null || target == null || !actor.isAlive() || !target.isAlive()) return false;
+        if (state != GameState.NIGHT || actor == null || target == null || !actor.isAlive() || !target.isAlive()) return false;
+        Role role = actor.getRole();
+        if (role == null) return false;
+        if (!(role instanceof NightAction) || ((NightAction) role).getAbility() != ability) return false;
         switch (ability) {
-            case "mafia":
-                if (!"마피아".equals(actor.getRole()) || actorId.equals(targetId)) return false;
+            case MAFIA_EXECUTION:
+                if (!(role instanceof Mafia) || actorId.equals(targetId) || !role.canTarget(target.getRole())) return false;
                 mafiaTargetId = targetId;
                 return true;
-            case "doctor":
-                if (!"의사".equals(actor.getRole())) return false;
+            case DOCTOR_HEAL:
+                if (!(role instanceof Doctor)) return false;
                 doctorTargetId = targetId;
                 return true;
-            case "police":
-                if (!"경찰".equals(actor.getRole()) || policeUsed) return false;
+            case POLICE_SEARCH:
+                if (!(role instanceof Police) || policeUsed) return false;
                 policeUsed = true;
                 return true;
             default:
@@ -156,25 +153,23 @@ public final class Game {
         }
     }
 
-    public synchronized String getRole(String playerId) {
+    public synchronized Role getRole(String playerId) {
         Player player = players.get(playerId);
         return player == null ? null : player.getRole();
     }
-
     public synchronized boolean isAlive(String playerId) {
         Player player = players.get(playerId);
         return player != null && player.isAlive();
     }
-
     public synchronized String investigate(String targetId) {
         Player target = players.get(targetId);
-        if (target == null) return null;
-        return "마피아".equals(target.getRole()) ? "마피아 입니다." : "마피아가 아닙니다.";
+        if (target == null || target.getRole() == null) return null;
+        return target.getRole().getFaction() == Faction.MAFIA ? "마피아 입니다." : "마피아가 아닙니다.";
     }
 
     public synchronized String finishNight(int version) {
-        if (!nightOpen || version != nightVersion) return null;
-        nightOpen = false;
+        if (state != GameState.NIGHT || version != nightVersion) return null;
+        state = GameState.DAY;
         nightVersion++;
         if (mafiaTargetId == null || !players.containsKey(mafiaTargetId) || !players.get(mafiaTargetId).isAlive()) {
             return "조용하게 밤이 넘어갔습니다.";
@@ -187,52 +182,46 @@ public final class Game {
     }
 
     public synchronized int beginVote() {
-        if (!started || nightOpen || voteOpen || trialOpen || finished) return -1;
-        votes.clear();
-        voteOpen = true;
+        if (state != GameState.DAY) return -1;
+        voteManager.beginVote();
+        state = GameState.VOTING;
         return ++phaseVersion;
     }
-
     public synchronized boolean castVote(String voterId, String targetId) {
-        if (!voteOpen || !isAlive(voterId) || !isAlive(targetId) || votes.containsKey(voterId)) return false;
-        votes.put(voterId, targetId);
-        return true;
+        return state == GameState.VOTING && voteManager.castVote(voterId, targetId, getPlayers());
     }
-
-    public synchronized VoteResult finishVote(int version) {
-        if (!voteOpen || version != phaseVersion) return null;
-        voteOpen = false;
-        Map<String, Integer> counts = new HashMap<>();
-        for (String targetId : votes.values()) counts.merge(targetId, 1, Integer::sum);
-        int max = counts.values().stream().mapToInt(Integer::intValue).max().orElse(0);
-        List<String> leaders = counts.entrySet().stream().filter(entry -> entry.getValue() == max)
-                .map(Map.Entry::getKey).collect(java.util.stream.Collectors.toList());
-        return new VoteResult(counts, max > 0 && leaders.size() == 1 ? leaders.get(0) : null);
+    public synchronized VoteManager.VoteResult finishVote(int version) {
+        if (state != GameState.VOTING || version != phaseVersion) return null;
+        VoteManager.VoteResult result = voteManager.finishVote();
+        state = result.getCandidateId() == null ? GameState.DAY : GameState.VOTING;
+        return result;
     }
 
     public synchronized int beginTrial(String candidateId) {
-        if (finished || voteOpen || trialOpen || !isAlive(candidateId)) return -1;
+        if (state != GameState.VOTING || !isAlive(candidateId)) return -1;
         trialCandidateId = candidateId;
-        trialVotes.clear();
-        trialOpen = true;
+        voteManager.beginTrial();
+        state = GameState.DEFENSE;
         return ++phaseVersion;
     }
-
-    public synchronized boolean castTrialVote(String voterId, boolean approve) {
-        if (!trialOpen || !isAlive(voterId) || voterId.equals(trialCandidateId) || trialVotes.containsKey(voterId)) return false;
-        trialVotes.put(voterId, approve);
-        return true;
+    public synchronized int beginTrialVote() {
+        if (state != GameState.DEFENSE) return -1;
+        state = GameState.TRIAL;
+        return ++phaseVersion;
     }
-
+    public synchronized boolean castTrialVote(String voterId, boolean approve) {
+        return state == GameState.TRIAL && voteManager.castTrialVote(voterId, trialCandidateId, approve, getPlayers());
+    }
     public synchronized Boolean finishTrial(int version) {
-        if (!trialOpen || version != phaseVersion) return null;
-        trialOpen = false;
-        long approvals = trialVotes.values().stream().filter(Boolean::booleanValue).count();
-        long rejections = trialVotes.size() - approvals;
-        boolean executed = approvals >= rejections;
+        if (state != GameState.TRIAL || version != phaseVersion) return null;
+        boolean executed = voteManager.finishTrial();
+        state = GameState.DAY;
         if (executed) {
-            players.get(trialCandidateId).kill();
-            recentlyKilledId = trialCandidateId;
+            Player candidate = players.get(trialCandidateId);
+            if (candidate != null) {
+                candidate.kill();
+                recentlyKilledId = trialCandidateId;
+            }
         }
         return executed;
     }
@@ -241,36 +230,20 @@ public final class Game {
         Player player = players.get(playerId);
         return player == null ? "알 수 없는 참가자" : player.getNickname();
     }
-
     public synchronized String checkWinner() {
-        if (finished) return winner;
+        if (state == GameState.FINISHED) return winner;
         long mafia = players.values().stream().filter(Player::isAlive)
-                .filter(player -> "마피아".equals(player.getRole())).count();
+                .filter(player -> player.getRole() != null && player.getRole().getFaction() == Faction.MAFIA).count();
         long citizens = getAliveCount() - mafia;
         if (mafia == 0) winner = "시민팀 승리!";
         else if (mafia >= citizens) winner = "마피아팀 승리!";
-        if (winner != null) finished = true;
+        if (winner != null) state = GameState.FINISHED;
         return winner;
     }
 
-    public static final class VoteResult {
-        private final Map<String, Integer> counts;
-        private final String candidateId;
-
-        private VoteResult(Map<String, Integer> counts, String candidateId) {
-            this.counts = new HashMap<>(counts);
-            this.candidateId = candidateId;
-        }
-
-        public Map<String, Integer> getCounts() { return new HashMap<>(counts); }
-        public String getCandidateId() { return candidateId; }
-    }
-
     public synchronized MessageEmbed getLobbyEmbed() {
-        return new EmbedBuilder()
-                .setTitle("🎮 마피아 게임이 생성되었습니다!")
+        return new EmbedBuilder().setTitle("🎮 마피아 게임이 생성되었습니다!")
                 .setDescription("현재 참가자: " + players.size() + " / " + MAX_PLAYERS)
-                .setColor(0x5865F2)
-                .build();
+                .setColor(0x5865F2).build();
     }
 }
