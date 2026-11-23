@@ -29,7 +29,7 @@ public final class VoteManager {
     public synchronized void beginTrial() { trialVotes.clear(); }
 
     public synchronized boolean castTrialVote(String voterId, String candidateId, boolean approve, List<Player> players) {
-        if (voterId.equals(candidateId) || !isAlive(voterId, players) || trialVotes.containsKey(voterId)) return false;
+        if (!isAlive(voterId, players) || trialVotes.containsKey(voterId)) return false;
         trialVotes.put(voterId, approve);
         return true;
     }

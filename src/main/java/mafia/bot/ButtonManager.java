@@ -466,7 +466,7 @@ public final class ButtonManager extends ListenerAdapter {
         if (game != null && accepted) {
             replyEphemeral(event, game, "찬반 투표 완료", "찬반 투표가 접수되었습니다.", 0x57F287);
         } else {
-            replyEphemeral(event, "투표 실패", "후보자 외 생존 참가자는 한 번만 투표할 수 있습니다.", 0xED4245);
+            replyEphemeral(event, "투표 실패", "생존한 참가자는 한 번만 투표할 수 있습니다.", 0xED4245);
         }
     }
 
