@@ -23,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ButtonManager extends ListenerAdapter {
     private final GameTimer gameTimer = new GameTimer();
@@ -153,12 +154,17 @@ public final class ButtonManager extends ListenerAdapter {
         } else if (seconds == 0) {
             Map<Player, Role> roles = game.startAndAssignRoles();
             if (roles == null) return;
-            for (Map.Entry<Player, Role> assignment : roles.entrySet()) sendRoleNotice(game, assignment, roles);
-            startNight(event, game);
+            AtomicInteger pendingNotices = new AtomicInteger(roles.size());
+            for (Map.Entry<Player, Role> assignment : roles.entrySet()) {
+                sendRoleNotice(game, assignment, roles, () -> {
+                    if (pendingNotices.decrementAndGet() == 0) startNight(event, game);
+                });
+            }
         }
     }
 
-    private void sendRoleNotice(Game game, Map.Entry<Player, Role> assignment, Map<Player, Role> roles) {
+    private void sendRoleNotice(Game game, Map.Entry<Player, Role> assignment, Map<Player, Role> roles,
+                                Runnable whenComplete) {
         Role role = assignment.getValue();
         String description = "당신의 직업은 `" + role.getName() + "` 입니다.";
         int color = role.getTeam() == Team.MAFIA ? 0xED4245 : 0x5865F2;
@@ -170,7 +176,9 @@ public final class ButtonManager extends ListenerAdapter {
             afterRoleNotice = () -> sendPrivateEmbed(game, assignment.getKey().getId(),
                     new EmbedBuilder().setTitle("마피아 동료 안내")
                             .setDescription("당신의 동료는 `" + partners + "` 입니다.")
-                            .setColor(color).build());
+                            .setColor(color).build(), whenComplete);
+        } else {
+            afterRoleNotice = whenComplete;
         }
         sendPrivateEmbed(game, assignment.getKey().getId(), new EmbedBuilder()
                 .setTitle("직업 배정 안내").setDescription(description).setColor(color).build(), afterRoleNotice);
@@ -225,10 +233,14 @@ public final class ButtonManager extends ListenerAdapter {
         InteractionHook hook = hooks == null ? null : hooks.get(playerId);
         if (hook == null) {
             System.err.println("비공개 안내를 보낼 참가자 상호작용을 찾을 수 없습니다: " + playerId);
+            whenSent.run();
             return;
         }
         hook.sendMessageEmbeds(embed).setEphemeral(true).setComponents(components).queue(
-                ignored -> whenSent.run(), error -> System.err.println("채널 비공개 안내 전송 실패: " + error.getMessage()));
+                ignored -> whenSent.run(), error -> {
+                    System.err.println("채널 비공개 안내 전송 실패: " + error.getMessage());
+                    whenSent.run();
+                });
     }
 
     private void handleNightAction(ButtonInteractionEvent event, String componentId) {
