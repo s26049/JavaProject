@@ -14,19 +14,13 @@ import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
 import net.dv8tion.jda.api.components.buttons.Button;
-import net.dv8tion.jda.api.Permission;
-import net.dv8tion.jda.api.entities.PermissionOverride;
 import net.dv8tion.jda.api.interactions.InteractionHook;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.utils.messages.MessageEditBuilder;
 import java.util.Map;
-import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.EnumMap;
-import java.util.EnumSet;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
@@ -37,13 +31,10 @@ public final class ButtonManager extends ListenerAdapter {
     private static final String NIGHT_PREFIX = "mafia:night:";
     private static final String VOTE_PREFIX = "mafia:vote:";
     private static final String TRIAL_PREFIX = "mafia:trial:";
-    private static final List<Permission> CHAT_SEND_PERMISSIONS = List.of(
-            Permission.MESSAGE_SEND, Permission.MESSAGE_SEND_IN_THREADS);
-    private final Map<String, Map<String, Map<Permission, Integer>>> previousSendPermissions = new HashMap<>();
-    private final Map<String, Map<String, Map<Permission, Integer>>> deadSendPermissions = new HashMap<>();
     private final Map<String, Map<String, InteractionHook>> participantHooks = new ConcurrentHashMap<>();
 
     private final GameManager gameManager;
+    private final ChannelSpeechPermissionManager speechPermissions = new ChannelSpeechPermissionManager();
 
     public ButtonManager(GameManager gameManager) {
         this.gameManager = gameManager;
@@ -262,7 +253,7 @@ public final class ButtonManager extends ListenerAdapter {
             String winner = game.checkWinner();
             if (winner != null) {
                 announceGameEnd(event, game, winner);
-                restoreDeadSpeechPermissions(event, game);
+                speechPermissions.restoreDeadPlayers(event.getJDA(), game);
                 participantHooks.remove(game.getId());
             } else {
                 event.getJDA().getTextChannelById(game.getChannelId())
@@ -274,7 +265,7 @@ public final class ButtonManager extends ListenerAdapter {
         };
         String killedId = game.getRecentlyKilledId();
         if (killedId == null) announceMorning.run();
-        else silencePlayer(event, game, killedId, announceMorning);
+        else speechPermissions.silencePlayer(event.getJDA(), game, killedId, announceMorning);
     }
 
     private void startDayTimer(ButtonInteractionEvent event, Game game) {
@@ -359,7 +350,7 @@ public final class ButtonManager extends ListenerAdapter {
     private void startDefense(ButtonInteractionEvent event, Game game, String candidateId) {
         int version = game.beginTrial(candidateId);
         if (version < 0) return;
-        applyDefenseSpeechLock(event, game, candidateId,
+        speechPermissions.restrictDefense(event.getJDA(), game, candidateId,
                 () -> sendDefenseTimer(event, game, candidateId, version));
     }
 
@@ -382,7 +373,8 @@ public final class ButtonManager extends ListenerAdapter {
             gameTimer.schedule(() -> updateDefenseTimer(event, game, messageId, candidateId, version, remaining - 1),
                     1, TimeUnit.SECONDS);
         } else {
-            restoreSpeechPermissions(event, game, () -> startTrialVote(event, game, candidateId));
+            speechPermissions.restoreAfterDefense(event.getJDA(), game,
+                    () -> startTrialVote(event, game, candidateId));
         }
     }
 
@@ -417,7 +409,8 @@ public final class ButtonManager extends ListenerAdapter {
             sendAnnouncement(event, game, "최후의 반론", executed
                     ? "`" + game.getPlayerName(candidateId) + "`님이 투표로 처형당하였습니다."
                     : "`" + game.getPlayerName(candidateId) + "`님의 처형이 부결되었습니다.");
-            if (executed) silencePlayer(event, game, candidateId, () -> continueAfterDay(event, game));
+            if (executed) speechPermissions.silencePlayer(event.getJDA(), game, candidateId,
+                    () -> continueAfterDay(event, game));
             else continueAfterDay(event, game);
         }
     }
@@ -454,123 +447,11 @@ public final class ButtonManager extends ListenerAdapter {
         }
     }
 
-    private void applyDefenseSpeechLock(ButtonInteractionEvent event, Game game, String candidateId,
-                                        Runnable whenComplete) {
-        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
-        Map<String, Map<Permission, Integer>> previous = new HashMap<>();
-        previousSendPermissions.put(game.getId(), previous);
-        List<Player> players = game.getPlayers();
-        AtomicInteger pending = new AtomicInteger(players.size());
-        if (players.isEmpty()) {
-            whenComplete.run();
-            return;
-        }
-        for (Player player : game.getPlayers()) {
-            event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(player.getId()).queue(member -> {
-                PermissionOverride override = channel.getPermissionOverride(member);
-                synchronized (previous) { previous.put(player.getId(), snapshotSendPermissions(override)); }
-                if (player.getId().equals(candidateId)) {
-                    channel.upsertPermissionOverride(member).grant(CHAT_SEND_PERMISSIONS).queue(
-                            ignored -> completeSpeechLock(pending, whenComplete),
-                            error -> { System.err.println("최후의 반론 발언권 설정 실패: " + error.getMessage()); completeSpeechLock(pending, whenComplete); });
-                } else {
-                    channel.upsertPermissionOverride(member).deny(CHAT_SEND_PERMISSIONS).queue(
-                            ignored -> completeSpeechLock(pending, whenComplete),
-                            error -> { System.err.println("최후의 반론 발언권 설정 실패: " + error.getMessage()); completeSpeechLock(pending, whenComplete); });
-                }
-            }, error -> {
-                System.err.println("최후의 반론 참가자 조회 실패: " + error.getMessage());
-                completeSpeechLock(pending, whenComplete);
-            });
-        }
-    }
-
-    private void completeSpeechLock(AtomicInteger pending, Runnable whenComplete) {
-        if (pending.decrementAndGet() == 0) whenComplete.run();
-    }
-
-    private void restoreSpeechPermissions(ButtonInteractionEvent event, Game game, Runnable whenComplete) {
-        Map<String, Map<Permission, Integer>> previous = previousSendPermissions.remove(game.getId());
-        if (previous == null || previous.isEmpty()) { whenComplete.run(); return; }
-        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
-        AtomicInteger pending = new AtomicInteger(previous.size());
-        for (Map.Entry<String, Map<Permission, Integer>> entry : previous.entrySet()) {
-            event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(entry.getKey()).queue(member -> {
-                net.dv8tion.jda.api.requests.restaction.PermissionOverrideAction action =
-                        channel.upsertPermissionOverride(member).clear(CHAT_SEND_PERMISSIONS);
-                EnumSet<Permission> allowed = permissionsWithState(entry.getValue(), 1);
-                EnumSet<Permission> denied = permissionsWithState(entry.getValue(), -1);
-                if (!allowed.isEmpty()) action.grant(allowed);
-                if (!denied.isEmpty()) action.deny(denied);
-                action.queue(ignored -> completeSpeechLock(pending, whenComplete), error -> {
-                    System.err.println("발언권 복구 실패: " + error.getMessage());
-                    completeSpeechLock(pending, whenComplete);
-                });
-            }, error -> {
-                System.err.println("발언권 복구 대상 조회 실패: " + error.getMessage());
-                completeSpeechLock(pending, whenComplete);
-            });
-        }
-    }
-
-    private void silencePlayer(ButtonInteractionEvent event, Game game, String playerId, Runnable whenComplete) {
-        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
-        event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(playerId).queue(member -> {
-            PermissionOverride override = channel.getPermissionOverride(member);
-            Map<Permission, Integer> original = snapshotSendPermissions(override);
-            synchronized (deadSendPermissions) {
-                deadSendPermissions.computeIfAbsent(game.getId(), ignored -> new HashMap<>()).put(playerId, original);
-            }
-            channel.upsertPermissionOverride(member).deny(CHAT_SEND_PERMISSIONS).queue(
-                    ignored -> whenComplete.run(),
-                    error -> { System.err.println("사망 플레이어 발언 제한 실패: " + error.getMessage()); whenComplete.run(); });
-        }, error -> {
-            System.err.println("사망 플레이어 조회 실패: " + error.getMessage());
-            whenComplete.run();
-        });
-    }
-
-    private void restoreDeadSpeechPermissions(ButtonInteractionEvent event, Game game) {
-        Map<String, Map<Permission, Integer>> previous;
-        synchronized (deadSendPermissions) { previous = deadSendPermissions.remove(game.getId()); }
-        if (previous == null) return;
-        TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
-        for (Map.Entry<String, Map<Permission, Integer>> entry : previous.entrySet()) {
-            event.getJDA().getGuildById(game.getGuildId()).retrieveMemberById(entry.getKey()).queue(member -> {
-                net.dv8tion.jda.api.requests.restaction.PermissionOverrideAction action =
-                        channel.upsertPermissionOverride(member).clear(CHAT_SEND_PERMISSIONS);
-                EnumSet<Permission> allowed = permissionsWithState(entry.getValue(), 1);
-                EnumSet<Permission> denied = permissionsWithState(entry.getValue(), -1);
-                if (!allowed.isEmpty()) action.grant(allowed);
-                if (!denied.isEmpty()) action.deny(denied);
-                action.queue(null, error -> System.err.println("게임 종료 후 발언권 복구 실패: " + error.getMessage()));
-            }, error -> System.err.println("게임 종료 후 참가자 조회 실패: " + error.getMessage()));
-        }
-    }
-
-    private Map<Permission, Integer> snapshotSendPermissions(PermissionOverride override) {
-        Map<Permission, Integer> snapshot = new EnumMap<>(Permission.class);
-        for (Permission permission : CHAT_SEND_PERMISSIONS) {
-            int state = override == null ? 0 : override.getAllowed().contains(permission) ? 1
-                    : override.getDenied().contains(permission) ? -1 : 0;
-            snapshot.put(permission, state);
-        }
-        return snapshot;
-    }
-
-    private EnumSet<Permission> permissionsWithState(Map<Permission, Integer> snapshot, int expectedState) {
-        EnumSet<Permission> permissions = EnumSet.noneOf(Permission.class);
-        for (Permission permission : CHAT_SEND_PERMISSIONS) {
-            if (snapshot.getOrDefault(permission, 0) == expectedState) permissions.add(permission);
-        }
-        return permissions;
-    }
-
     private void continueAfterDay(ButtonInteractionEvent event, Game game) {
         String winner = game.checkWinner();
         if (winner != null) {
             announceGameEnd(event, game, winner);
-            restoreDeadSpeechPermissions(event, game);
+            speechPermissions.restoreDeadPlayers(event.getJDA(), game);
             participantHooks.remove(game.getId());
         } else {
             startNight(event, game);

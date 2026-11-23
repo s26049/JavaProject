@@ -70,16 +70,15 @@ public final class Game {
     public synchronized boolean hasPlayer(String playerId) { return players.containsKey(playerId); }
     public synchronized boolean isFull() { return players.size() == MAX_PLAYERS; }
     public synchronized boolean isStarted() { return state != GameState.WAITING && state != GameState.COUNTDOWN; }
-    public synchronized GameState getState() { return state; }
     public synchronized boolean isNightOpen() { return state == GameState.NIGHT; }
     public synchronized boolean isFinished() { return state == GameState.FINISHED; }
+
+    private long countdownStartedAt;
 
     public synchronized int nextCountdownSecond(int version) {
         if (state != GameState.COUNTDOWN || version != countdownVersion || players.size() != MAX_PLAYERS) return -1;
         return 5 - (int) Math.min(5, Math.max(0, System.currentTimeMillis() - countdownStartedAt) / 1000);
     }
-
-    private long countdownStartedAt;
 
     public synchronized int beginCountdown() {
         if (state != GameState.WAITING || players.size() != MAX_PLAYERS) return -1;
@@ -104,8 +103,7 @@ public final class Game {
     }
 
     public synchronized int beginNight() {
-        if (!isStarted() || state == GameState.NIGHT || state == GameState.VOTING
-                || state == GameState.DEFENSE || state == GameState.TRIAL || state == GameState.FINISHED) return -1;
+        if (state != GameState.DAY) return -1;
         state = GameState.NIGHT;
         nightVersion++;
         phaseVersion++;
@@ -117,16 +115,13 @@ public final class Game {
         return nightVersion;
     }
 
-    public synchronized int getNightVersion() { return nightVersion; }
     public synchronized int getNightNumber() { return nightNumber; }
-    public synchronized int getPhaseVersion() { return phaseVersion; }
     public synchronized String getRecentlyKilledId() { return recentlyKilledId; }
     public synchronized List<Player> getPlayers() { return new ArrayList<>(players.values()); }
     public synchronized List<Player> getAlivePlayers() {
         return players.values().stream().filter(Player::isAlive).collect(java.util.stream.Collectors.toList());
     }
     public synchronized int getAliveCount() { return (int) players.values().stream().filter(Player::isAlive).count(); }
-    public synchronized Player getPlayer(String playerId) { return players.get(playerId); }
 
     public synchronized boolean selectNightTarget(String actorId, String targetId, NightAbility ability) {
         Player actor = players.get(actorId);
@@ -153,10 +148,6 @@ public final class Game {
         }
     }
 
-    public synchronized Role getRole(String playerId) {
-        Player player = players.get(playerId);
-        return player == null ? null : player.getRole();
-    }
     public synchronized boolean isAlive(String playerId) {
         Player player = players.get(playerId);
         return player != null && player.isAlive();
