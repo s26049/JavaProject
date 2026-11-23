@@ -34,9 +34,10 @@ public final class VoteManager {
         return true;
     }
 
-    public synchronized boolean finishTrial() {
+    public synchronized boolean finishTrial(List<Player> players) {
         long approvals = trialVotes.values().stream().filter(Boolean::booleanValue).count();
-        long rejections = trialVotes.size() - approvals;
+        long alivePlayers = players.stream().filter(Player::isAlive).count();
+        long rejections = alivePlayers - approvals;
         return approvals >= rejections;
     }
 

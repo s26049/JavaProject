@@ -206,7 +206,7 @@ public final class Game {
     }
     public synchronized Boolean finishTrial(int version) {
         if (state != GameState.TRIAL || version != phaseVersion) return null;
-        boolean executed = voteManager.finishTrial();
+        boolean executed = voteManager.finishTrial(getPlayers());
         state = GameState.DAY;
         if (executed) {
             Player candidate = players.get(trialCandidateId);
