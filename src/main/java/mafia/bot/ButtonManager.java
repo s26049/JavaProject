@@ -269,7 +269,7 @@ public final class ButtonManager extends ListenerAdapter {
     }
 
     private void startDayTimer(ButtonInteractionEvent event, Game game) {
-        int remainingSeconds = game.getPlayers().size() * 10;
+        int remainingSeconds = game.getAlivePlayers().size() * 10;
         int minutes = remainingSeconds / 60;
         int seconds = remainingSeconds % 60;
         String time = String.format("%02d:%02d", minutes, seconds);
