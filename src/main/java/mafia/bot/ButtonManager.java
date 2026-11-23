@@ -160,16 +160,20 @@ public final class ButtonManager extends ListenerAdapter {
 
     private void sendRoleNotice(Game game, Map.Entry<Player, Role> assignment, Map<Player, Role> roles) {
         Role role = assignment.getValue();
-        String description = "당신의 직업은 `" + role.getName() + "` 입니다!";
+        String description = "당신의 직업은 `" + role.getName() + "` 입니다.";
+        int color = role.getTeam() == Team.MAFIA ? 0xED4245 : 0x5865F2;
+        Runnable afterRoleNotice = () -> { };
         if (role instanceof Mafia) {
             String partners = roles.entrySet().stream().filter(entry -> entry.getValue() instanceof Mafia
                     && !entry.getKey().equals(assignment.getKey())).map(entry -> entry.getKey().getNickname())
                     .findFirst().orElse("알 수 없음");
-            description += "\n당신의 동료 마피아는 `" + partners + "`님입니다.";
+            afterRoleNotice = () -> sendPrivateEmbed(game, assignment.getKey().getId(),
+                    new EmbedBuilder().setTitle("마피아 동료 안내")
+                            .setDescription("당신의 동료는 `" + partners + "` 입니다.")
+                            .setColor(color).build());
         }
-        int color = role.getTeam() == Team.MAFIA ? 0xED4245 : 0x5865F2;
         sendPrivateEmbed(game, assignment.getKey().getId(), new EmbedBuilder()
-                .setTitle("직업 배정 안내").setDescription(description).setColor(color).build());
+                .setTitle("직업 배정 안내").setDescription(description).setColor(color).build(), afterRoleNotice);
     }
 
     private void startNight(ButtonInteractionEvent event, Game game) {
@@ -201,11 +205,22 @@ public final class ButtonManager extends ListenerAdapter {
     }
 
     private void sendPrivateEmbed(Game game, String playerId, net.dv8tion.jda.api.entities.MessageEmbed embed) {
-        sendPrivateEmbed(game, playerId, embed, java.util.Collections.emptyList());
+        sendPrivateEmbed(game, playerId, embed, java.util.Collections.emptyList(), () -> { });
+    }
+
+    private void sendPrivateEmbed(Game game, String playerId, net.dv8tion.jda.api.entities.MessageEmbed embed,
+                                  Runnable whenSent) {
+        sendPrivateEmbed(game, playerId, embed, java.util.Collections.emptyList(), whenSent);
     }
 
     private void sendPrivateEmbed(Game game, String playerId, net.dv8tion.jda.api.entities.MessageEmbed embed,
                                   List<net.dv8tion.jda.api.components.MessageTopLevelComponent> components) {
+        sendPrivateEmbed(game, playerId, embed, components, () -> { });
+    }
+
+    private void sendPrivateEmbed(Game game, String playerId, net.dv8tion.jda.api.entities.MessageEmbed embed,
+                                  List<net.dv8tion.jda.api.components.MessageTopLevelComponent> components,
+                                  Runnable whenSent) {
         Map<String, InteractionHook> hooks = participantHooks.get(game.getId());
         InteractionHook hook = hooks == null ? null : hooks.get(playerId);
         if (hook == null) {
@@ -213,7 +228,7 @@ public final class ButtonManager extends ListenerAdapter {
             return;
         }
         hook.sendMessageEmbeds(embed).setEphemeral(true).setComponents(components).queue(
-                ignored -> { }, error -> System.err.println("채널 비공개 안내 전송 실패: " + error.getMessage()));
+                ignored -> whenSent.run(), error -> System.err.println("채널 비공개 안내 전송 실패: " + error.getMessage()));
     }
 
     private void handleNightAction(ButtonInteractionEvent event, String componentId) {
