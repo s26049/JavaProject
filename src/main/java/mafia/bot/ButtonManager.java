@@ -7,7 +7,7 @@ import mafia.game.Player;
 import mafia.game.VoteManager;
 import mafia.action.NightAction;
 import mafia.action.NightAbility;
-import mafia.role.Faction;
+import mafia.role.Team;
 import mafia.role.Mafia;
 import mafia.role.Role;
 import net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent;
@@ -167,7 +167,7 @@ public final class ButtonManager extends ListenerAdapter {
                     .findFirst().orElse("알 수 없음");
             description += "\n당신의 동료 마피아는 `" + partners + "`님입니다.";
         }
-        int color = role.getFaction() == Faction.MAFIA ? 0xED4245 : 0x5865F2;
+        int color = role.getTeam() == Team.MAFIA ? 0xED4245 : 0x5865F2;
         sendPrivateEmbed(game, assignment.getKey().getId(), new EmbedBuilder()
                 .setTitle("직업 배정 안내").setDescription(description).setColor(color).build());
     }

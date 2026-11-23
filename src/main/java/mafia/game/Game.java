@@ -4,7 +4,7 @@ import mafia.role.Citizen;
 import mafia.action.NightAbility;
 import mafia.action.NightAction;
 import mafia.role.Doctor;
-import mafia.role.Faction;
+import mafia.role.Team;
 import mafia.role.Mafia;
 import mafia.role.Police;
 import mafia.role.Role;
@@ -155,7 +155,7 @@ public final class Game {
     public synchronized String investigate(String targetId) {
         Player target = players.get(targetId);
         if (target == null || target.getRole() == null) return null;
-        return target.getRole().getFaction() == Faction.MAFIA ? "마피아 입니다." : "마피아가 아닙니다.";
+        return target.getRole().getTeam() == Team.MAFIA ? "마피아 입니다." : "마피아가 아닙니다.";
     }
 
     public synchronized String finishNight(int version) {
@@ -224,7 +224,7 @@ public final class Game {
     public synchronized String checkWinner() {
         if (state == GameState.FINISHED) return winner;
         long mafia = players.values().stream().filter(Player::isAlive)
-                .filter(player -> player.getRole() != null && player.getRole().getFaction() == Faction.MAFIA).count();
+                .filter(player -> player.getRole() != null && player.getRole().getTeam() == Team.MAFIA).count();
         long citizens = getAliveCount() - mafia;
         if (mafia == 0) winner = "시민팀 승리!";
         else if (mafia >= citizens) winner = "마피아팀 승리!";
