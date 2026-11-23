@@ -310,6 +310,7 @@ public final class ButtonManager extends ListenerAdapter {
                 announceGameEnd(event, game, winner);
                 speechPermissions.restoreDeadPlayers(event.getJDA(), game);
                 participantHooks.remove(game.getId());
+                gameManager.removeGame(game.getId());
             } else {
                 event.getJDA().getTextChannelById(game.getChannelId())
                         .sendMessageEmbeds(new EmbedBuilder().setTitle(night + "번째 낮")
@@ -508,6 +509,7 @@ public final class ButtonManager extends ListenerAdapter {
             announceGameEnd(event, game, winner);
             speechPermissions.restoreDeadPlayers(event.getJDA(), game);
             participantHooks.remove(game.getId());
+            gameManager.removeGame(game.getId());
         } else {
             startNight(event, game);
         }

@@ -21,4 +21,8 @@ public final class GameManager {
     public Game getGame(String gameId) {
         return games.get(gameId);
     }
+
+    public void removeGame(String gameId) {
+        games.remove(gameId);
+    }
 }
