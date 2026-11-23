@@ -117,6 +117,7 @@ public final class Game {
 
     public synchronized int getNightNumber() { return nightNumber; }
     public synchronized String getRecentlyKilledId() { return recentlyKilledId; }
+    public synchronized String getMafiaTargetId() { return mafiaTargetId; }
     public synchronized List<Player> getPlayers() { return new ArrayList<>(players.values()); }
     public synchronized List<Player> getAlivePlayers() {
         return players.values().stream().filter(Player::isAlive).collect(java.util.stream.Collectors.toList());

@@ -242,8 +242,31 @@ public final class ButtonManager extends ListenerAdapter {
             replyEphemeral(event, "능력 사용 실패", "해당 대상을 선택할 수 없습니다.", 0xED4245);
             return;
         }
-        replyEphemeral(event, game, "능력 사용 안내",
-                ability == NightAbility.MAFIA_EXECUTION ? "처형 대상을 선택했습니다. 동료와 선택이 공유됩니다." : "치료 대상을 선택했습니다.", 0x57F287);
+        if (ability == NightAbility.MAFIA_EXECUTION) {
+            String selectedTargetId = game.getMafiaTargetId();
+            String selectedTarget = game.getPlayerName(selectedTargetId);
+            event.replyEmbeds(new EmbedBuilder().setTitle("능력 사용 안내")
+                            .setDescription("공동 처형 대상: `" + selectedTarget + "`님")
+                            .setColor(0x57F287).build())
+                    .setEphemeral(true)
+                    .queue(hook -> {
+                        rememberHook(game, event.getUser().getId(), hook);
+                        broadcastMafiaTarget(game);
+                    });
+        } else {
+            replyEphemeral(event, game, "능력 사용 안내", "치료 대상을 선택했습니다.", 0x57F287);
+        }
+    }
+
+    private void broadcastMafiaTarget(Game game) {
+        String targetName = game.getPlayerName(game.getMafiaTargetId());
+        net.dv8tion.jda.api.entities.MessageEmbed update = new EmbedBuilder()
+                .setTitle("마피아 공동 처형 대상")
+                .setDescription("현재 대상: `" + targetName + "`님")
+                .setColor(0xED4245).build();
+        for (Player player : game.getAlivePlayers()) {
+            if (player.getRole() instanceof Mafia) sendPrivateEmbed(game, player.getId(), update);
+        }
     }
 
     private void finishNight(ButtonInteractionEvent event, Game game, int version, int night) {
