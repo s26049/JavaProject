@@ -1,9 +1,9 @@
 package mafia.action;
 
 public enum NightAbility {
-    MAFIA_EXECUTION("mafia"),
-    POLICE_SEARCH("police"),
-    DOCTOR_HEAL("doctor");
+    MAFIA("mafia"),
+    POLICE("police"),
+    DOCTOR("doctor");
 
     private final String componentId;
 

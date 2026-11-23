@@ -132,15 +132,15 @@ public final class Game {
         if (role == null) return false;
         if (!(role instanceof NightAction) || ((NightAction) role).getAbility() != ability) return false;
         switch (ability) {
-            case MAFIA_EXECUTION:
+            case MAFIA:
                 if (!(role instanceof Mafia) || actorId.equals(targetId) || !role.canTarget(target.getRole())) return false;
                 mafiaTargetId = targetId;
                 return true;
-            case DOCTOR_HEAL:
+            case DOCTOR:
                 if (!(role instanceof Doctor)) return false;
                 doctorTargetId = targetId;
                 return true;
-            case POLICE_SEARCH:
+            case POLICE:
                 if (!(role instanceof Police) || policeUsed) return false;
                 policeUsed = true;
                 return true;

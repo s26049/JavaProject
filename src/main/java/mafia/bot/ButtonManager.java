@@ -204,7 +204,7 @@ public final class ButtonManager extends ListenerAdapter {
                                  String prompt, int night) {
         List<Button> buttons = new ArrayList<>();
         for (Player target : game.getPlayers()) {
-            if (!target.isAlive() || (ability == NightAbility.MAFIA_EXECUTION && target.getRole() instanceof Mafia)) continue;
+            if (!target.isAlive() || (ability == NightAbility.MAFIA && target.getRole() instanceof Mafia)) continue;
             buttons.add(Button.primary(NIGHT_PREFIX + ability.getComponentId() + ":" + game.getId() + ":" + target.getId(), target.getNickname()));
         }
         sendPrivateEmbed(game, actor.getId(), new EmbedBuilder()
@@ -253,7 +253,7 @@ public final class ButtonManager extends ListenerAdapter {
             replyEphemeral(event, "능력 사용 실패", "이 밤에는 능력을 사용할 수 없습니다.", 0xED4245);
             return;
         }
-        if (ability == NightAbility.POLICE_SEARCH) {
+        if (ability == NightAbility.POLICE) {
             if (!game.selectNightTarget(event.getUser().getId(), targetId, ability)) {
                 replyEphemeral(event, "수색 실패", "이미 수색했거나 해당 대상을 조사할 수 없습니다.", 0xED4245);
                 return;
@@ -269,7 +269,7 @@ public final class ButtonManager extends ListenerAdapter {
             replyEphemeral(event, "능력 사용 실패", "해당 대상을 선택할 수 없습니다.", 0xED4245);
             return;
         }
-        if (ability == NightAbility.MAFIA_EXECUTION) {
+        if (ability == NightAbility.MAFIA) {
             String selectedTargetId = game.getMafiaTargetId();
             String selectedTarget = game.getPlayerName(selectedTargetId);
             event.replyEmbeds(new EmbedBuilder().setTitle("능력 사용 안내")
