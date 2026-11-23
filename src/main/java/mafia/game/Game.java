@@ -202,7 +202,7 @@ public final class Game {
         return ++phaseVersion;
     }
     public synchronized boolean castTrialVote(String voterId, boolean approve) {
-        return state == GameState.TRIAL && voteManager.castTrialVote(voterId, trialCandidateId, approve, getPlayers());
+        return state == GameState.TRIAL && voteManager.castTrialVote(voterId, approve, getPlayers());
     }
     public synchronized Boolean finishTrial(int version) {
         if (state != GameState.TRIAL || version != phaseVersion) return null;

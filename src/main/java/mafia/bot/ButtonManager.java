@@ -205,7 +205,7 @@ public final class ButtonManager extends ListenerAdapter {
         List<Button> buttons = new ArrayList<>();
         for (Player target : game.getPlayers()) {
             if (!target.isAlive() || (ability == NightAbility.MAFIA && target.getRole() instanceof Mafia)) continue;
-            buttons.add(Button.primary(NIGHT_PREFIX + ability.getComponentId() + ":" + game.getId() + ":" + target.getId(), target.getNickname()));
+            buttons.add(Button.primary(NIGHT_PREFIX + ability.name() + ":" + game.getId() + ":" + target.getId(), target.getNickname()));
         }
         sendPrivateEmbed(game, actor.getId(), new EmbedBuilder()
                         .setTitle(night + "번째 밤").setDescription(prompt).setColor(0x5865F2).build(),
@@ -246,7 +246,12 @@ public final class ButtonManager extends ListenerAdapter {
     private void handleNightAction(ButtonInteractionEvent event, String componentId) {
         String[] parts = componentId.split(":", 5);
         if (parts.length != 5) return;
-        NightAbility ability = NightAbility.fromComponentId(parts[2]);
+        NightAbility ability;
+        try {
+            ability = NightAbility.valueOf(parts[2]);
+        } catch (IllegalArgumentException exception) {
+            ability = null;
+        }
         Game game = gameManager.getGame(parts[3]);
         String targetId = parts[4];
         if (ability == null || game == null || !game.isNightOpen() || !game.isAlive(event.getUser().getId())) {

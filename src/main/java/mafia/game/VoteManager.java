@@ -28,7 +28,7 @@ public final class VoteManager {
 
     public synchronized void beginTrial() { trialVotes.clear(); }
 
-    public synchronized boolean castTrialVote(String voterId, String candidateId, boolean approve, List<Player> players) {
+    public synchronized boolean castTrialVote(String voterId, boolean approve, List<Player> players) {
         if (!isAlive(voterId, players) || trialVotes.containsKey(voterId)) return false;
         trialVotes.put(voterId, approve);
         return true;
