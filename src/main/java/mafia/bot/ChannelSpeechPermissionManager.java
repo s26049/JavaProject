@@ -40,19 +40,13 @@ final class ChannelSpeechPermissionManager {
                 PermissionOverrideAction action = channel.upsertPermissionOverride(member);
                 if (player.getId().equals(candidateId)) action.grant(SEND_PERMISSIONS);
                 else action.deny(SEND_PERMISSIONS);
-                action.queue(ignored -> complete(pending, whenComplete), error -> {
-                    logFailure("최후의 반론 발언권 설정 실패", error);
-                    complete(pending, whenComplete);
-                });
-            }, error -> {
-                logFailure("최후의 반론 참가자 조회 실패", error);
-                complete(pending, whenComplete);
-            });
+                action.queue(ignored -> complete(pending, whenComplete), error -> complete(pending, whenComplete));
+            }, error -> complete(pending, whenComplete));
         }
     }
 
     void restoreAfterDefense(JDA jda, Game game, Runnable whenComplete) {
-        restore(jda, game, defenseSnapshots.remove(game.getId()), whenComplete, "발언권 복구 실패");
+        restore(jda, game, defenseSnapshots.remove(game.getId()), whenComplete);
     }
 
     void silencePlayer(JDA jda, Game game, String playerId, Runnable whenComplete) {
@@ -61,22 +55,16 @@ final class ChannelSpeechPermissionManager {
             deadPlayerSnapshots.computeIfAbsent(game.getId(), ignored -> new ConcurrentHashMap<>())
                     .put(playerId, snapshot(channel.getPermissionOverride(member)));
             channel.upsertPermissionOverride(member).deny(SEND_PERMISSIONS).queue(
-                    ignored -> whenComplete.run(), error -> {
-                        logFailure("사망 플레이어 발언 제한 실패", error);
-                        whenComplete.run();
-                    });
-        }, error -> {
-            logFailure("사망 플레이어 조회 실패", error);
-            whenComplete.run();
-        });
+                    ignored -> whenComplete.run(), error -> whenComplete.run());
+        }, error -> whenComplete.run());
     }
 
     void restoreDeadPlayers(JDA jda, Game game) {
-        restore(jda, game, deadPlayerSnapshots.remove(game.getId()), () -> { }, "게임 종료 후 발언권 복구 실패");
+        restore(jda, game, deadPlayerSnapshots.remove(game.getId()), () -> { });
     }
 
     private void restore(JDA jda, Game game, Map<String, Map<Permission, Integer>> snapshots,
-                         Runnable whenComplete, String failureMessage) {
+                         Runnable whenComplete) {
         if (snapshots == null || snapshots.isEmpty()) {
             whenComplete.run();
             return;
@@ -91,14 +79,8 @@ final class ChannelSpeechPermissionManager {
                     EnumSet<Permission> denied = permissionsWithState(snapshot, -1);
                     if (!allowed.isEmpty()) action.grant(allowed);
                     if (!denied.isEmpty()) action.deny(denied);
-                    action.queue(ignored -> complete(pending, whenComplete), error -> {
-                        logFailure(failureMessage, error);
-                        complete(pending, whenComplete);
-                    });
-                }, error -> {
-                    logFailure("발언권 복구 대상 조회 실패", error);
-                    complete(pending, whenComplete);
-                }));
+                    action.queue(ignored -> complete(pending, whenComplete), error -> complete(pending, whenComplete));
+                }, error -> complete(pending, whenComplete)));
     }
 
     private Map<Permission, Integer> snapshot(PermissionOverride override) {
@@ -123,7 +105,4 @@ final class ChannelSpeechPermissionManager {
         if (pending.decrementAndGet() == 0) callback.run();
     }
 
-    private void logFailure(String action, Throwable error) {
-        System.err.println(action + ": " + error.getMessage());
-    }
 }

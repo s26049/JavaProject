@@ -6,7 +6,6 @@ import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
-import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
 import net.dv8tion.jda.api.components.buttons.Button;
 
@@ -24,42 +23,30 @@ public final class CommandManager extends ListenerAdapter {
         }
 
         if (event.getGuild() == null || !(event.getChannel() instanceof TextChannel)) {
-            event.replyEmbeds(new EmbedBuilder()
-                            .setTitle("게임 생성 실패")
-                            .setDescription("서버의 텍스트 채널에서만 게임을 생성할 수 있습니다.")
-                            .setColor(0xED4245)
-                            .build())
-                    .setEphemeral(true)
-                    .queue();
+            dismiss(event);
             return;
         }
 
         TextChannel channel = (TextChannel) event.getChannel();
         if (!event.getGuild().getSelfMember().hasPermission(channel, Permission.MANAGE_PERMISSIONS)) {
-            event.replyEmbeds(new EmbedBuilder()
-                            .setTitle("게임 생성 실패")
-                            .setDescription("사망자 채팅 제한을 위해 봇에 채널 권한 관리 권한이 필요합니다.")
-                            .setColor(0xED4245)
-                            .build())
-                    .setEphemeral(true)
-                    .queue();
+            dismiss(event);
             return;
         }
 
         Game game = gameManager.createGameIfNoLobby(event.getGuild().getId(), event.getChannel().getId());
         if (game == null) {
-            event.replyEmbeds(new EmbedBuilder()
-                            .setTitle("게임 생성 실패")
-                            .setDescription("게임이 이미 생성되었습니다.")
-                            .setColor(0xED4245)
-                            .build())
-                    .setEphemeral(true)
-                    .queue();
+            dismiss(event);
             return;
         }
 
         event.replyEmbeds(game.getLobbyEmbed())
                 .setComponents(ActionRow.of(Button.success(ButtonManager.joinButtonId(game.getId()), "참가하기")))
                 .queue(hook -> hook.retrieveOriginal().queue(message -> game.setLobbyMessageId(message.getId())));
+    }
+
+    private void dismiss(SlashCommandInteractionEvent event) {
+        event.deferReply(true).queue(
+                hook -> hook.deleteOriginal().queue(ignored -> { }, ignored -> { }),
+                ignored -> { });
     }
 }

@@ -29,9 +29,7 @@ public final class DiscordManager {
         public void onReady(ReadyEvent event) {
             for (Guild guild : event.getJDA().getGuilds()) {
                 guild.upsertCommand(Commands.slash("게임생성", "마피아 게임 대기실을 생성합니다."))
-                        .queue(
-                                command -> System.out.println("슬래시 명령어 등록 완료: " + guild.getName()),
-                                error -> System.err.println("슬래시 명령어 등록 실패 (" + guild.getName() + "): " + error.getMessage()));
+                        .queue(command -> { }, error -> { });
             }
         }
     }

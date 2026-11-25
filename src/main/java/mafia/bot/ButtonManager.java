@@ -76,7 +76,7 @@ public final class ButtonManager extends ListenerAdapter {
                 || event.getGuild() == null
                 || !game.getGuildId().equals(event.getGuild().getId())
                 || !game.getChannelId().equals(event.getChannel().getId())) {
-            replyEphemeral(event, "게임 참가 실패", "이 게임 대기실은 더 이상 사용할 수 없습니다.", 0xED4245);
+            dismiss(event);
             return;
         }
 
@@ -94,10 +94,7 @@ public final class ButtonManager extends ListenerAdapter {
 
         Player player = new Player(event.getUser().getId(), event.getUser().getName());
         if (!game.addPlayer(player)) {
-            String message = game.hasPlayer(player.getId())
-                    ? "이미 참가한 대기실입니다."
-                    : "대기실 참가에 실패했습니다.";
-            replyEphemeral(event, "게임 참가 실패", message, 0xED4245);
+            dismiss(event);
             return;
         }
 
@@ -116,12 +113,12 @@ public final class ButtonManager extends ListenerAdapter {
 
     private void cancel(ButtonInteractionEvent event, Game game) {
         if (game.isStarted()) {
-            replyEphemeral(event, "게임 참가 취소 실패", "게임이 시작되어 참가를 취소할 수 없습니다.", 0xED4245);
+            dismiss(event);
             return;
         }
         boolean wasFull = game.isFull();
         if (!game.removePlayer(event.getUser().getId())) {
-            replyEphemeral(event, "게임 참가 실패", "참가 중인 대기실이 아닙니다.", 0xED4245);
+            dismiss(event);
             return;
         }
 
@@ -232,15 +229,11 @@ public final class ButtonManager extends ListenerAdapter {
         Map<String, InteractionHook> hooks = participantHooks.get(game.getId());
         InteractionHook hook = hooks == null ? null : hooks.get(playerId);
         if (hook == null) {
-            System.err.println("비공개 안내를 보낼 참가자 상호작용을 찾을 수 없습니다: " + playerId);
             whenSent.run();
             return;
         }
         hook.sendMessageEmbeds(embed).setEphemeral(true).setComponents(components).queue(
-                ignored -> whenSent.run(), error -> {
-                    System.err.println("채널 비공개 안내 전송 실패: " + error.getMessage());
-                    whenSent.run();
-                });
+                ignored -> whenSent.run(), error -> whenSent.run());
     }
 
     private void handleNightAction(ButtonInteractionEvent event, String componentId) {
@@ -255,12 +248,12 @@ public final class ButtonManager extends ListenerAdapter {
         Game game = gameManager.getGame(parts[3]);
         String targetId = parts[4];
         if (ability == null || game == null || !game.isNightOpen() || !game.isAlive(event.getUser().getId())) {
-            replyEphemeral(event, "능력 사용 실패", "이 밤에는 능력을 사용할 수 없습니다.", 0xED4245);
+            dismiss(event);
             return;
         }
         if (ability == NightAbility.POLICE) {
             if (!game.selectNightTarget(event.getUser().getId(), targetId, ability)) {
-                replyEphemeral(event, "수색 실패", "이미 수색했거나 해당 대상을 조사할 수 없습니다.", 0xED4245);
+                dismiss(event);
                 return;
             }
             String result = game.investigate(targetId);
@@ -271,7 +264,7 @@ public final class ButtonManager extends ListenerAdapter {
             return;
         }
         if (!game.selectNightTarget(event.getUser().getId(), targetId, ability)) {
-            replyEphemeral(event, "능력 사용 실패", "해당 대상을 선택할 수 없습니다.", 0xED4245);
+            dismiss(event);
             return;
         }
         if (ability == NightAbility.MAFIA) {
@@ -337,7 +330,7 @@ public final class ButtonManager extends ListenerAdapter {
                         gameTimer.schedule(() -> updateDayTimer(event, game, message.getId(), remainingSeconds - 1),
                                 1, TimeUnit.SECONDS);
                     }
-                }, error -> System.err.println("낮 타이머 메시지 전송 실패: " + error.getMessage()));
+                }, error -> { });
     }
 
     private void updateDayTimer(ButtonInteractionEvent event, Game game, String timerMessageId, int remainingSeconds) {
@@ -350,7 +343,7 @@ public final class ButtonManager extends ListenerAdapter {
                         .setDescription("⌛" + time)
                         .setColor(0x5865F2)
                         .build())
-                .queue(null, error -> System.err.println("낮 타이머 메시지 갱신 실패: " + error.getMessage()));
+                .queue(null, error -> { });
         if (remainingSeconds > 0) {
             gameTimer.schedule(() -> updateDayTimer(event, game, timerMessageId, remainingSeconds - 1),
                     1, TimeUnit.SECONDS);
@@ -371,14 +364,14 @@ public final class ButtonManager extends ListenerAdapter {
                 .setComponents(buttonRows(buttons))
                 .queue(message -> gameTimer.schedule(() -> updateVoteTimer(event, game, message.getId(), version, 9),
                         1, TimeUnit.SECONDS),
-                        error -> System.err.println("투표 안내 전송 실패: " + error.getMessage()));
+                        error -> { });
     }
 
     private void updateVoteTimer(ButtonInteractionEvent event, Game game, String messageId, int version, int remaining) {
         if (game.isFinished()) return;
         TextChannel channel = event.getJDA().getTextChannelById(game.getChannelId());
         channel.editMessageEmbedsById(messageId, countdownEmbed("투표 시간", "의심되는 사람을 투표하세요.", remaining))
-                .queue(null, error -> System.err.println("투표 타이머 갱신 실패: " + error.getMessage()));
+                .queue(null, error -> { });
         if (remaining > 0) {
             gameTimer.schedule(() -> updateVoteTimer(event, game, messageId, version, remaining - 1), 1, TimeUnit.SECONDS);
         } else {
@@ -416,7 +409,7 @@ public final class ButtonManager extends ListenerAdapter {
         channel.sendMessageEmbeds(countdownEmbed(candidate, "최후의 반론", 10))
                 .queue(message -> gameTimer.schedule(() -> updateDefenseTimer(event, game, message.getId(),
                                 candidateId, version, 9), 1, TimeUnit.SECONDS),
-                        error -> System.err.println("최후의 반론 안내 전송 실패: " + error.getMessage()));
+                        error -> { });
     }
 
     private void updateDefenseTimer(ButtonInteractionEvent event, Game game, String messageId,
@@ -424,7 +417,7 @@ public final class ButtonManager extends ListenerAdapter {
         if (game.isFinished()) return;
         event.getJDA().getTextChannelById(game.getChannelId())
                 .editMessageEmbedsById(messageId, countdownEmbed(game.getPlayerName(candidateId), "최후의 반론", remaining))
-                .queue(null, error -> System.err.println("최후의 반론 타이머 갱신 실패: " + error.getMessage()));
+                .queue(null, error -> { });
         if (remaining > 0) {
             gameTimer.schedule(() -> updateDefenseTimer(event, game, messageId, candidateId, version, remaining - 1),
                     1, TimeUnit.SECONDS);
@@ -446,7 +439,7 @@ public final class ButtonManager extends ListenerAdapter {
                 .setComponents(ActionRow.of(buttons))
                 .queue(message -> gameTimer.schedule(() -> updateTrialTimer(event, game, message.getId(),
                                 candidateId, version, 4), 1, TimeUnit.SECONDS),
-                        error -> System.err.println("찬반 투표 안내 전송 실패: " + error.getMessage()));
+                        error -> { });
     }
 
     private void updateTrialTimer(ButtonInteractionEvent event, Game game, String messageId,
@@ -455,7 +448,7 @@ public final class ButtonManager extends ListenerAdapter {
         event.getJDA().getTextChannelById(game.getChannelId())
                 .editMessageEmbedsById(messageId, countdownEmbed("최후의 반론", "`"
                         + game.getPlayerName(candidateId) + "`의 처형 여부를 결정해주세요.", remaining))
-                .queue(null, error -> System.err.println("찬반 투표 타이머 갱신 실패: " + error.getMessage()));
+                .queue(null, error -> { });
         if (remaining > 0) {
             gameTimer.schedule(() -> updateTrialTimer(event, game, messageId, candidateId, version, remaining - 1),
                     1, TimeUnit.SECONDS);
@@ -482,7 +475,7 @@ public final class ButtonManager extends ListenerAdapter {
         if (game != null && accepted) {
             replyEphemeral(event, game, "투표 완료", "투표가 접수되었습니다.", 0x57F287);
         } else {
-            replyEphemeral(event, "투표 실패", "생존한 참가자는 한 번만 투표할 수 있습니다.", 0xED4245);
+            dismiss(event);
         }
     }
 
@@ -499,7 +492,7 @@ public final class ButtonManager extends ListenerAdapter {
         if (game != null && accepted) {
             replyEphemeral(event, game, "찬반 투표 완료", "찬반 투표가 접수되었습니다.", 0x57F287);
         } else {
-            replyEphemeral(event, "투표 실패", "생존한 참가자는 한 번만 투표할 수 있습니다.", 0xED4245);
+            dismiss(event);
         }
     }
 
@@ -534,7 +527,7 @@ public final class ButtonManager extends ListenerAdapter {
     private void sendAnnouncement(ButtonInteractionEvent event, Game game, String title, String message) {
         event.getJDA().getTextChannelById(game.getChannelId()).sendMessageEmbeds(new EmbedBuilder()
                         .setTitle(title).setDescription(message).setColor(0x5865F2).build())
-                .queue(null, error -> System.err.println("게임 안내 전송 실패: " + error.getMessage()));
+                .queue(null, error -> { });
     }
 
     private void announceGameEnd(ButtonInteractionEvent event, Game game, String winner) {
@@ -549,8 +542,8 @@ public final class ButtonManager extends ListenerAdapter {
                     }
                     channel.sendMessageEmbeds(new EmbedBuilder().setTitle("직업 배정 결과")
                                     .setDescription(roles.toString()).setColor(0x5865F2).build())
-                            .queue(null, error -> System.err.println("직업 결과 전송 실패: " + error.getMessage()));
-                }, error -> System.err.println("게임 결과 전송 실패: " + error.getMessage()));
+                            .queue(null, error -> { });
+                }, error -> { });
     }
 
     private void updateLobby(ButtonInteractionEvent event, Game game) {
@@ -559,17 +552,13 @@ public final class ButtonManager extends ListenerAdapter {
                         .setEmbeds(game.getLobbyEmbed())
                         .setComponents(ActionRow.of(Button.success(joinButtonId(game.getId()), "참가하기")))
                         .build())
-                .queue(null, error -> System.err.println("대기실 메시지 갱신 실패: " + error.getMessage()));
+                .queue(null, error -> { });
     }
 
-    private void replyEphemeral(ButtonInteractionEvent event, String title, String message, int color) {
-        event.replyEmbeds(new EmbedBuilder()
-                        .setTitle(title)
-                        .setDescription(message)
-                        .setColor(color)
-                        .build())
-                .setEphemeral(true)
-                .queue();
+    private void dismiss(ButtonInteractionEvent event) {
+        event.deferReply(true).queue(
+                hook -> hook.deleteOriginal().queue(ignored -> { }, ignored -> { }),
+                ignored -> { });
     }
 
     private void replyEphemeral(ButtonInteractionEvent event, Game game, String title, String message, int color) {
